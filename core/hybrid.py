@@ -5,12 +5,11 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from rag_config import (
+from core.config import (
     BM25_CORPUS_FILE,
     RETRIEVE_CANDIDATES,
-    RETRIEVAL_MODE_VECTOR,
     RRF_K,
     SearchFilters,
     apply_payload_filters,
@@ -68,7 +67,7 @@ class BM25Index:
         path = Path(corpus_path)
         if not path.exists():
             raise FileNotFoundError(
-                f"BM25 語料不存在: {path}，請執行 python 3_build_qdrant.py 重建索引"
+                f"BM25 語料不存在: {path}，請執行 uv run python scripts/build_index.py 重建索引"
             )
         with open(path, encoding="utf-8") as handle:
             records = json.load(handle)

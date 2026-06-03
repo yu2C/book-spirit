@@ -4,7 +4,7 @@
 
 運行方法：
   pip install -r requirements-langchain.txt
-  python 6_fastapi_server.py
+  uv run python -m api
 
 Docker Compose：
   docker compose up -d
@@ -26,8 +26,8 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from query_log import QueryLogger
-from rag_config import (
+from api.query_log import QueryLogger
+from core.config import (
     BACKEND_LANGCHAIN,
     BACKEND_LANGGRAPH,
     BACKEND_NATIVE,
@@ -35,11 +35,11 @@ from rag_config import (
     EMBEDDING_MODEL,
     OLLAMA_MODEL,
     SUPPORTED_BACKENDS,
-    SUPPORTED_RETRIEVAL_STRATEGIES,
     SearchFilters,
     resolve_retrieval_settings,
 )
-from rag_native import NativeRAG, doc_to_source
+from core.pipeline import NativeRAG, doc_to_source
+from memory.store import ReadingMemory
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,6 +59,44 @@ class AskRequest(BaseModel):
     retrieval_mode: str | None = None
     use_rerank: bool | None = None
     retrieval_strategy: str | None = None
+    use_memory: bool = True
+    book_id: str | None = None
+    save_note: bool = False
+    note_take: str | None = None
+
+
+class NoteCreateRequest(BaseModel):
+    book_id: str
+    my_take: str
+    book_title: str = ""
+    chapter: str = ""
+    heading: str = ""
+    quote: str = ""
+    tags: str = ""
+    chunk_id: int | None = None
+
+
+class NoteResponse(BaseModel):
+    id: int
+    book_id: str
+    book_title: str
+    chapter: str
+    heading: str
+    quote: str
+    my_take: str
+    tags: str
+    chunk_id: int | None = None
+    created_at: str
+    updated_at: str
+
+
+class ProfileRequest(BaseModel):
+    profile_text: str
+
+
+class ProfileResponse(BaseModel):
+    profile_text: str
+    notes_count: int
 
 
 class SearchRequest(BaseModel):
@@ -103,6 +141,7 @@ class AskResponse(BaseModel):
     time_elapsed: float
     llm_time: float
     backend: str
+    memory_notes_used: list[NoteResponse] = []
 
 
 class HealthResponse(BaseModel):
@@ -123,7 +162,7 @@ def build_backend(name: str):
         return NativeRAG()
     if name == BACKEND_LANGCHAIN:
         try:
-            from langchain_retriever import LangChainRAG
+            from integrations.langchain import LangChainRAG
         except ImportError as exc:
             raise RuntimeError(
                 "LangChain backend 需要: pip install -r requirements-langchain.txt"
@@ -131,7 +170,7 @@ def build_backend(name: str):
         return LangChainRAG()
     if name == BACKEND_LANGGRAPH:
         try:
-            from rag_graph import LangGraphRAG
+            from integrations.langgraph import LangGraphRAG
         except ImportError as exc:
             raise RuntimeError(
                 "LangGraph backend 需要: pip install -r requirements-langchain.txt"
@@ -165,6 +204,7 @@ app.add_middleware(
 )
 
 query_logger = QueryLogger()
+reading_memory = ReadingMemory()
 
 if SKIP_INIT:
     backends: dict[str, object] = {}
@@ -254,6 +294,9 @@ def call_ask(
     filters: SearchFilters | None,
     retrieval_mode: str,
     use_rerank: bool,
+    *,
+    use_memory: bool = True,
+    book_id: str | None = None,
 ):
     if hasattr(backend, "ask"):
         return backend.ask(
@@ -263,8 +306,14 @@ def call_ask(
             filters=filters,
             mode=retrieval_mode,
             use_rerank=use_rerank,
+            use_memory=use_memory,
+            book_id=book_id,
         )
     raise HTTPException(status_code=500, detail="Backend 不支援 ask")
+
+
+def note_to_response(data: dict) -> NoteResponse:
+    return NoteResponse(**data)
 
 
 def check_ollama(backend) -> bool:
@@ -450,6 +499,8 @@ async def ask(request: AskRequest, background_tasks: BackgroundTasks):
             filters,
             retrieval_mode,
             use_rerank,
+            use_memory=request.use_memory,
+            book_id=request.book_id,
         )
         result_ids = extract_result_ids(result["sources"])
 
@@ -466,10 +517,28 @@ async def ask(request: AskRequest, background_tasks: BackgroundTasks):
             filters_to_dict(filters),
         )
 
+        memory_used = [
+            note_to_response(n) for n in result.get("memory_notes_used", [])
+        ]
+
+        if request.save_note and result.get("answer") and not str(result["answer"]).startswith("❌"):
+            bid = request.book_id or "default"
+            src = result["sources"][0] if result.get("sources") else {}
+            reading_memory.add_note(
+                book_id=bid,
+                my_take=(request.note_take or result["answer"]).strip(),
+                book_title=src.get("title") or "",
+                chapter=src.get("chapter") or "",
+                heading=src.get("heading") or "",
+                quote=(src.get("text_preview") or "").strip(),
+                chunk_id=src.get("chunk_id"),
+            )
+
         return AskResponse(
             question=result["question"],
             answer=result["answer"],
             sources=sources_to_models(result["sources"]),
+            memory_notes_used=memory_used,
             time_elapsed=result["time_elapsed"],
             llm_time=result["llm_time"],
             backend=result.get("backend", request.backend),
@@ -477,6 +546,59 @@ async def ask(request: AskRequest, background_tasks: BackgroundTasks):
     except Exception as exc:
         logger.error("處理請求失敗: %s", exc)
         raise HTTPException(status_code=500, detail=f"處理失敗: {exc}") from exc
+
+
+@app.post("/notes", response_model=NoteResponse, tags=["讀書記憶"])
+async def create_note(request: NoteCreateRequest):
+    try:
+        note = reading_memory.add_note(
+            book_id=request.book_id,
+            my_take=request.my_take,
+            book_title=request.book_title,
+            chapter=request.chapter,
+            heading=request.heading,
+            quote=request.quote,
+            tags=request.tags,
+            chunk_id=request.chunk_id,
+        )
+        return note_to_response(note.to_dict())
+    except Exception as exc:
+        logger.error("新增筆記失敗: %s", exc)
+        raise HTTPException(status_code=500, detail=f"新增筆記失敗: {exc}") from exc
+
+
+@app.get("/notes", response_model=list[NoteResponse], tags=["讀書記憶"])
+async def list_notes(
+    book_id: str | None = None,
+    q: str | None = None,
+    limit: int = 50,
+):
+    try:
+        if q:
+            notes = reading_memory.search_relevant(q, book_id=book_id, limit=limit)
+        else:
+            notes = reading_memory.list_notes(book_id=book_id, limit=limit)
+        return [note_to_response(n.to_dict()) for n in notes]
+    except Exception as exc:
+        logger.error("列出筆記失敗: %s", exc)
+        raise HTTPException(status_code=500, detail=f"列出筆記失敗: {exc}") from exc
+
+
+@app.get("/profile", response_model=ProfileResponse, tags=["讀書記憶"])
+async def get_profile():
+    return ProfileResponse(
+        profile_text=reading_memory.get_profile(),
+        notes_count=reading_memory.count_notes(),
+    )
+
+
+@app.put("/profile", response_model=ProfileResponse, tags=["讀書記憶"])
+async def update_profile(request: ProfileRequest):
+    reading_memory.set_profile(request.profile_text)
+    return ProfileResponse(
+        profile_text=reading_memory.get_profile(),
+        notes_count=reading_memory.count_notes(),
+    )
 
 
 @app.get("/info", tags=["基本"])
@@ -502,6 +624,7 @@ async def info():
             "LangChain retriever",
             "LangGraph workflow",
             "Postgres query log",
+            "SQLite 讀書筆記 /notes、/profile",
             "來源引用",
         ],
     }

@@ -7,8 +7,8 @@ from typing import Any, Dict, List, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from rag_config import DEFAULT_TOP_K, OLLAMA_MODEL, OLLAMA_URL, SearchFilters
-from rag_native import NativeRAG, doc_to_source
+from core.config import DEFAULT_TOP_K, OLLAMA_MODEL, OLLAMA_URL, SearchFilters
+from core.pipeline import NativeRAG, doc_to_source
 
 
 class RAGState(TypedDict, total=False):
@@ -100,23 +100,19 @@ class LangGraphRAG:
         filters: SearchFilters | None = None,
         mode: str | None = None,
         use_rerank: bool | None = None,
+        *,
+        use_memory: bool = True,
+        book_id: str | None = None,
     ) -> Dict[str, Any]:
-        start_time = time.time()
-        final_state = self.graph.invoke(
-            {
-                "question": question,
-                "top_k": top_k,
-                "temperature": temperature,
-                "filters": filters,
-                "retrieval_mode": mode,
-                "use_rerank": use_rerank,
-            }
+        result = self.native.ask(
+            question,
+            top_k=top_k,
+            temperature=temperature,
+            filters=filters,
+            mode=mode,
+            use_rerank=use_rerank,
+            use_memory=use_memory,
+            book_id=book_id,
         )
-        return {
-            "question": question,
-            "answer": final_state.get("answer", ""),
-            "sources": final_state.get("sources", []),
-            "time_elapsed": time.time() - start_time,
-            "llm_time": final_state.get("llm_time", 0.0),
-            "backend": "langgraph",
-        }
+        result["backend"] = "langgraph"
+        return result

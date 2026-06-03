@@ -1,45 +1,37 @@
-# ETL — Extract, Transform, Load
+# ETL 入庫流程
 
-書籍入庫流程：**Extract PDF → Transform chunk → Load Qdrant**
+與 [`ARCHITECTURE.md`](../ARCHITECTURE.md) 的 **ingest** 層對應。
 
-## 流程對照
-
-| ETL 階段 | 腳本 | 說明 |
-|----------|------|------|
-| **Extract** | `1_convert_pdf_to_md.py` | PDF → Markdown（MarkItDown） |
-| **Transform** | `2_chunk_and_embed.py` | 分塊實驗、章節 metadata 提取 |
-| **Load** | `3_build_qdrant.py` | BGE embedding + 寫入 Qdrant |
-
-評測與服務：
-
-| 步驟 | 腳本 | 說明 |
+| 階段 | 模組 | 說明 |
 |------|------|------|
-| Eval | `4_test_search_quality.py` | 檢索品質評測（不含 LLM） |
-| QA CLI | `5_generate_answer_with_llm.py` | 本地 Ollama 問答 |
-| API | `6_fastapi_server.py` | FastAPI `/search` + `/ask` |
+| **Extract** | `ingest/converter.py` | PDF → Markdown（MarkItDown） |
+| **Transform** | `ingest/chunker.py` | 分塊、章節 metadata |
+| **Load** | `ingest/indexer.py` | BGE embedding + Qdrant + BM25 語料 |
+
+| 下游 | 入口 | 說明 |
+|------|------|------|
+| 問答 | `scripts/chat.py` | 互動問答 + `/save` |
+| 評測 | `scripts/eval.py` | 檢索品質（不含 LLM） |
+| API | `python -m api` | FastAPI |
 
 ## 一鍵執行
 
 ```bash
-# 從 repo 根目錄
 bash etl/run_pipeline.sh
 ```
 
-或逐步：
+等同：
 
 ```bash
-python 1_convert_pdf_to_md.py
-python 3_build_qdrant.py          # 已內建步驟 2 的分塊邏輯
-python 4_test_search_quality.py --preview
+uv run python scripts/build_index.py
+uv run python scripts/eval.py --preview
 ```
 
-## Docker 部署前
+## Docker
 
-1. 在本機或 CI 跑完 ETL，讓 Qdrant 有 `books` collection  
-2. 若用 `docker compose`，需將索引載入 Qdrant 容器（重建 `3_build_qdrant.py` 並指向 `QDRANT_URL=http://localhost:6333`）
+索引需在 host 或容器外建立後掛載 `qdrant_storage`，或：
 
 ```bash
-QDRANT_URL=http://localhost:6333 python 3_build_qdrant.py
+QDRANT_URL=http://localhost:6333 uv run python scripts/build_index.py
 docker compose up -d
-curl http://localhost:8000/health
 ```

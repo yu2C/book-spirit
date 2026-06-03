@@ -6,9 +6,10 @@
 """
 
 import sys
-import os
 from pathlib import Path
+
 from markitdown import MarkItDown
+
 
 def convert_pdf_to_markdown(pdf_path: str, output_dir: str = "outputs") -> str:
     """
@@ -46,7 +47,7 @@ def convert_pdf_to_markdown(pdf_path: str, output_dir: str = "outputs") -> str:
         lines = result.text_content.split('\n')
         chars = len(result.text_content)
         
-        print(f"✅ 轉換成功！")
+        print("✅ 轉換成功！")
         print(f"   - 行數: {len(lines)}")
         print(f"   - 字數: {chars}")
         print(f"💾 已保存到: {output_path}")
@@ -79,12 +80,14 @@ if __name__ == "__main__":
         pdf_file = sys.argv[1]
     else:
         # 預設找 sample_books 目錄下的第一個 PDF
-        sample_dir = Path("sample_books")
+        from core.config import SAMPLE_BOOKS_DIR
+
+        sample_dir = SAMPLE_BOOKS_DIR
         pdf_files = list(sample_dir.glob("*.pdf"))
         
         if not pdf_files:
             print("❌ 使用方法:")
-            print("   python 1_convert_pdf_to_md.py <PDF路徑>")
+            print("   uv run python -m ingest.converter <PDF路徑>")
             print("\n   或在 sample_books/ 目錄放 PDF 檔案，直接執行本腳本")
             sys.exit(1)
         

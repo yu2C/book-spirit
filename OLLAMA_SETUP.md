@@ -81,11 +81,8 @@ curl http://localhost:11434/api/generate -d '{
 **回到之前的終端（code 所在的目錄）：**
 
 ```bash
-# Demo 模式（測試 3 個預設問題）
-python 5_generate_answer_with_llm.py --demo
-
-# 交互模式（自由提問）
-python 5_generate_answer_with_llm.py
+# 交互問答（答完可用 /save 存筆記）
+uv run python scripts/chat.py
 ```
 
 ---
@@ -143,8 +140,7 @@ Qwen2.5:7b-q4 在 M4 Air 上應該 **30-60 秒/次回答**（含搜尋時間）
 # Qwen2.5:3b-q4 更小更快（但質量下降）
 ollama pull qwen2.5:3b-q4
 
-# 然後改 5_generate_answer_with_llm.py
-ollama_model="qwen2.5:3b-q4"
+# 或設定環境變數 OLLAMA_MODEL=qwen2.5:3b-q4
 ```
 
 ---
@@ -177,7 +173,7 @@ OLLAMA_DEBUG=1 ollama serve
 ## 下一步
 
 1. ✅ 確保 `ollama serve` 在運行
-2. ✅ 執行 `python 5_generate_answer_with_llm.py --demo`
-3. ✅ 看到回答後，改成交互模式自由提問
+2. ✅ 先 `uv run python scripts/build_index.py` 建索引
+3. ✅ 執行 `uv run python scripts/chat.py` 自由提問
 
 祝你好運！🚀

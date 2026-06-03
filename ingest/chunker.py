@@ -4,9 +4,9 @@
 """
 
 import re
-from pathlib import Path
-from typing import List, Dict, Tuple
 from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Tuple
 
 DEFAULT_CHUNK_SIZE = 512
 DEFAULT_OVERLAP = 64
@@ -199,7 +199,7 @@ def test_different_chunk_sizes(md_text: str, chunk_sizes: List[int] = [256, 512,
         print(f"\n📊 Chunk Size = {size}")
         print(f"   - 分塊數: {len(chunks)}")
         print(f"   - 平均長度: {avg_length:.0f}")
-        print(f"   - 前 3 個分塊預覽:")
+        print("   - 前 3 個分塊預覽:")
         
         for i, chunk in enumerate(chunks[:3]):
             preview = chunk.text[:100].replace('\n', ' ')
@@ -214,7 +214,7 @@ if __name__ == "__main__":
     
     if not md_files:
         print("❌ 找不到 Markdown 檔案")
-        print("   請先執行: python 1_convert_pdf_to_md.py")
+        print("   請先執行: uv run python scripts/build_index.py")
         exit(1)
     
     md_path = md_files[0]
@@ -225,7 +225,7 @@ if __name__ == "__main__":
     
     # 提取結構
     chapters, headings = extract_structure(md_text)
-    print(f"\n📚 結構分析:")
+    print("\n📚 結構分析:")
     print(f"   - 章數: {len(chapters)}")
     print(f"   - 小節數: {len(headings)}")
     if chapters:

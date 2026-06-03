@@ -8,7 +8,7 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Qdrant
 from langchain_core.documents import Document
 
-from rag_config import (
+from core.config import (
     COLLECTION_NAME,
     DEFAULT_TOP_K,
     EMBEDDING_MODEL,
@@ -68,7 +68,7 @@ def retrieve(
     mode: str | None = None,
     use_rerank: bool | None = None,
 ) -> List[Dict[str, Any]]:
-    from rag_native import NativeRAG
+    from core.pipeline import NativeRAG
 
     rag = NativeRAG(qdrant_path=qdrant_path, qdrant_url=QDRANT_URL)
     return rag.retrieve(
@@ -84,7 +84,7 @@ class LangChainRAG:
     """LangChain retriever + native Ollama generation."""
 
     def __init__(self, **native_kwargs):
-        from rag_native import NativeRAG
+        from core.pipeline import NativeRAG
 
         self.native = NativeRAG(**native_kwargs)
 
@@ -115,39 +115,19 @@ class LangChainRAG:
         filters: SearchFilters | None = None,
         mode: str | None = None,
         use_rerank: bool | None = None,
+        *,
+        use_memory: bool = True,
+        book_id: str | None = None,
     ) -> Dict[str, Any]:
-        import time
-
-        start_time = time.time()
-        retrieved = self.retrieve(
+        result = self.native.ask(
             question,
             top_k=top_k,
+            temperature=temperature,
             filters=filters,
             mode=mode,
             use_rerank=use_rerank,
+            use_memory=use_memory,
+            book_id=book_id,
         )
-        if not retrieved:
-            return {
-                "question": question,
-                "answer": "❌ 未找到相關內容",
-                "sources": [],
-                "time_elapsed": time.time() - start_time,
-                "llm_time": 0.0,
-                "backend": "langchain",
-            }
-
-        from rag_native import doc_to_source
-
-        generate_start = time.time()
-        prompt = self.native.build_prompt(question, retrieved)
-        answer = self.native.generate_with_ollama(prompt, temperature=temperature)
-        llm_time = time.time() - generate_start
-
-        return {
-            "question": question,
-            "answer": answer,
-            "sources": [doc_to_source(doc) for doc in retrieved],
-            "time_elapsed": time.time() - start_time,
-            "llm_time": llm_time,
-            "backend": "langchain",
-        }
+        result["backend"] = "langchain"
+        return result

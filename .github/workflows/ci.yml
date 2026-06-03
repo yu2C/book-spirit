@@ -12,18 +12,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
+      - uses: astral-sh/setup-uv@v6
 
-      - name: Install dependencies
-        run: pip install -r requirements-test.txt
+      - name: Install test dependencies
+        run: uv sync --only-group test --no-default-groups --frozen
 
       - name: Ruff lint
-        run: ruff check rag_config.py rag_native.py rag_graph.py langchain_retriever.py query_log.py 6_fastapi_server.py tests/
+        run: uv run ruff check core ingest memory eval api integrations scripts tests/
 
       - name: Pytest
         env:
           RAG_SKIP_INIT: "1"
-        run: pytest -q
+        run: uv run pytest -q

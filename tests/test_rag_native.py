@@ -58,7 +58,7 @@ def test_retrieve_uses_query_prefix(rag_module):
 
 
 def test_retrieve_passes_query_filter(rag_module):
-    from rag_config import SearchFilters
+    from core.config import SearchFilters
 
     with patch.object(rag_module.NativeRAG, "__init__", lambda self, **kwargs: None):
         rag = rag_module.NativeRAG()
@@ -80,7 +80,7 @@ def test_retrieve_passes_query_filter(rag_module):
 
 
 def test_apply_payload_filters(rag_module):
-    from rag_config import SearchFilters
+    from core.config import SearchFilters
 
     docs = [
         {"chapter": "第一部分", "heading": "專長", "book_title": "納瓦爾寶典"},

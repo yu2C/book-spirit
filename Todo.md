@@ -1,4 +1,14 @@
-# RAG 修復 Todo
+# Book Spirit Todo
+
+## 定位（2025 梳理）
+
+- **對內：** 個人 RAG toy — 快速理解書 → 問答 → `/save` 記憶（見 `ARCHITECTURE.md`）
+- **對外：** 面試作品 — swappable RAG + memory 分層 + retrieval eval（README 求職摘要）
+- **之後：** 讀書片段文案（C），原料來自 Memory + 書摘
+
+---
+
+# RAG 修復 Todo（已完成）
 
 - [x] 1. 修復 Qdrant 向量維度（384 → 依模型動態設定）
 - [x] 2. 更新測試問題為《納瓦爾寶典》主題
@@ -123,3 +133,21 @@ query + optional filters (chapter/heading)
 - [ ] `4_test_search_quality.py` hybrid+rerank 平均 precision@3 **≥ 現有 vector-only**（或 bad case 明顯減少）
 - [ ] `/search` 帶 `chapter` filter 時，top-3 章節標籤一致率提高
 - [x] CI pytest 仍全過（rerank / hybrid 在 CI 用 mock，不載入 CrossEncoder）
+
+---
+
+## Phase 5 — 讀書記憶（SQLite Memory）
+
+> 心得與個人簡述存 SQLite；換 embedding / 重建 Qdrant 不影響筆記。Postgres `query_log` 仍只記查詢。
+
+- [x] **5.1** `reading_memory.py` — `reading_notes` + `user_profile` 表
+- [x] **5.2** `/ask` 注入相關筆記 + profile；回應 `memory_notes_used`
+- [x] **5.3** API：`POST/GET /notes`、`GET/PUT /profile`
+- [x] **5.4** CLI：`scripts/notes_cli.py`
+- [x] **5.5** pytest：`tests/test_reading_memory.py`
+- [x] **5.6** CLI `/save` 與 API `save_note` 一鍵存上一則回答
+- [x] **5.7** 文件梳理：`ARCHITECTURE.md`、`docs/DEPLOYMENT.md`、README 定位
+- [x] **5.8** 架構重構：`core/` `ingest/` `memory/` `eval/` `api/` `integrations/` `scripts/`
+- [ ] **5.9** 題庫 `eval/test_cases.json`（由你手寫）
+- [ ] **5.10** 從筆記生成讀書片段草稿（`scripts/generate_posts.py`）
+- [ ] **5.11** 筆記向量搜尋（多書後再考慮）

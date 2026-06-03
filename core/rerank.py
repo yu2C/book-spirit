@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Protocol
 
-from rag_config import RERANKER_MODEL
+from core.config import RERANKER_MODEL
 
 _reranker: "Reranker | None" = None
 

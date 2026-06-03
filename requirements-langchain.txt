@@ -1,3 +1,4 @@
+# 對照用；請改用：uv sync --group langchain
 -r requirements.txt
 
 # LangChain + LangGraph（/ask 的 langchain / langgraph backend）

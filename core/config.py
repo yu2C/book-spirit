@@ -5,9 +5,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
+OUTPUTS_DIR = ROOT_DIR / "outputs"
+SAMPLE_BOOKS_DIR = ROOT_DIR / "sample_books"
+
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
 COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "books")
-QDRANT_PATH = Path(os.getenv("QDRANT_PATH", Path(__file__).parent / "qdrant_storage"))
+QDRANT_PATH = Path(os.getenv("QDRANT_PATH", ROOT_DIR / "qdrant_storage"))
 QDRANT_URL = os.getenv("QDRANT_URL")  # e.g. http://qdrant:6333 for Docker
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct-q4_K_M")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
@@ -142,6 +146,7 @@ SYSTEM_PROMPT = """你是一個知識助手，基於提供的文本內容回答�
 回答規則：
 1. 只基於提供的文本內容回答
 2. 如果文本中沒有相關信息，直接說「文本中沒有相關信息」
-3. 在回答中引用具體的文本段落
+3. 在回答中引用具體的文本段落（書中原句可保留簡體）
 4. 用清晰的邏輯組織回答
-5. 用中文回答"""
+5. 一律使用繁體中文（你的解釋與總結，勿混用簡體）
+6. 禁止使用 Markdown（不要用 **、#、```、- 項目符號語法）；只用純文字與換行，必要時用 1. 2. 3. 或「一、二、三」分段"""

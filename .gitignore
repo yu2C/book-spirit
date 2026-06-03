@@ -23,6 +23,13 @@ wheels/
 .installed.cfg
 *.egg
 
+# Local reading memory (SQLite)
+data/
+
+# Generated / local-only
+search_quality_report.json
+.book_spirit_history
+
 # Big files
 qdrant_storage/
 outputs/

@@ -1,130 +1,112 @@
-# 📚 Book Spirit — 書籍 RAG 知識助手
+# 📚 Book Spirit
 
 [![CI](https://github.com/yu2C/book-spirit/actions/workflows/ci.yml/badge.svg)](https://github.com/yu2C/book-spirit/actions/workflows/ci.yml)
 
-本地部署的中文 RAG 系統：PDF 入庫 → 向量檢索 → Ollama 生成回答，附章節引用。  
-支援 **native**、**LangChain retriever**、**LangGraph workflow** 三種 backend 切換。
+**Swappable local RAG + personal reading memory** — ingest a book, ask with citations, save what you understood; retrieval stack can be rebuilt without losing your notes.
+
+| 你是… | 從這裡讀 |
+|--------|----------|
+| **面試官 / 第一次看 repo** | 下方「求職摘要」→ [ARCHITECTURE.md](ARCHITECTURE.md) |
+| **自己要讀書、記心得** | [QUICKSTART_READING.md](QUICKSTART_READING.md) |
+| **部署 / CI** | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 
 ---
 
-## 求職向摘要
+## 求職摘要（B）
 
-**EN:** End-to-end RAG pipeline (MarkItDown → chunk → BGE → Qdrant → FastAPI → Ollama) with retrieval evaluation, optional LangChain retriever, and LangGraph retrieve→generate workflow.
+**EN:** Personal reading memory (SQLite) on a swappable RAG stack: MarkItDown → chapter-aware chunking → BGE + Qdrant → Ollama, with retrieval-only eval and optional hybrid/rerank experiments. LangChain/LangGraph are thin wrappers over native—not the core.
 
-**中文：** 自研 ingest + 向量檢索 pipeline，整合 Qdrant Vector DB、FastAPI REST API、Ollama 本地 LLM；提供搜尋品質評測腳本，並以 LangChain / LangGraph 薄層展示框架整合能力。
+**中文：** 在可替換的 RAG 底座上，用 **SQLite 沉澱讀者自己的理解**；檢索與生成分離、固定題集評測檢索層。核心為自研 `native` pipeline；LangChain / LangGraph 僅作對照與履歷關鍵字。
 
-| 關鍵字 | 本專案對應 |
-|--------|------------|
-| RAG | PDF→MD→chunk→embed→retrieve→generate |
-| Vector DB | Qdrant（本地持久化 `./qdrant_storage`） |
-| Embedding | BAAI/bge-small-zh-v1.5（查詢加 `query:` 前綴） |
-| FastAPI | `6_fastapi_server.py` — `/health`, `/search`, `/ask`, `/docs` |
-| PostgreSQL | `query_log.py` — 每次 query / top-k chunk id / latency |
-| CI/CD | GitHub Actions + pytest + ruff |
-| LangChain | `langchain_retriever.py` — Qdrant + BGE retriever |
-| LangGraph | `rag_graph.py` — retrieve → generate 流程 |
-| Hybrid Search | `rag_hybrid.py` — BM25 + 向量 RRF 融合 |
-| Reranker | `rag_rerank.py` — BGE cross-encoder 重排 |
-| Metadata Filtering | Qdrant payload filter + post-filter |
-| Eval | `4_test_search_quality.py` — 人工評分 + 相似度報告 |
+| 關鍵字 | 對應 |
+|--------|------|
+| RAG / Vector DB | ingest → BGE → Qdrant → `/ask` |
+| Personal memory | `memory/store.py` — 筆記與 profile，與向量索引分離 |
+| Eval | `scripts/eval.py` — precision@k，不混 LLM 錯誤 |
+| Hybrid / Rerank | 進階實驗，見 ARCHITECTURE |
+| LangChain / LangGraph | 可選，委派 native |
+| FastAPI / CI | API + pytest；部署見 docs/DEPLOYMENT |
+
+**面試開場（30 秒）：** 見 [ARCHITECTURE.md#面試怎麼講](ARCHITECTURE.md#面試怎麼講b30-秒--追問)。
 
 ---
 
-## 系統架構
+## 架構一覽
 
 ```mermaid
-flowchart LR
-    PDF[PDF / sample_books] --> S1[1_convert_pdf_to_md.py]
-    S1 --> MD[outputs/*.md]
-    MD --> S2[2_chunk_and_embed.py]
-    S2 --> S3[3_build_qdrant.py]
-    S3 --> Qdrant[(Qdrant\nqdrant_storage)]
-    S3 --> BM25[bm25_corpus.json]
-    Qdrant --> Retrieve[rag_native / rag_hybrid]
-    BM25 --> Retrieve
-    Retrieve --> Rerank[rag_rerank optional]
-    Rerank --> S4[4_test_search_quality.py]
-    Rerank --> API[6_fastapi_server.py]
-    Retrieve --> API
-    API --> Native[native backend]
-    API --> LC[langchain backend]
-    API --> LG[langgraph backend]
-    Native --> Ollama[Ollama LLM]
-    LC --> Ollama
-    LG --> Ollama
-    Ollama --> Answer[回答 + 來源引用]
-    API --> PG[(Postgres query_logs)]
+flowchart TB
+    subgraph ingest [Ingest — 換書重做]
+        PDF[PDF] --> Chunk[章節分塊] --> Qdrant[(Qdrant)]
+    end
+    subgraph rag [RAG — 可換 embedding / 策略]
+        Qdrant --> Retrieve[retrieve]
+        Retrieve --> Ollama[Ollama 生成]
+    end
+    subgraph memory [Memory — 你的理解]
+        SQLite[(SQLite 筆記)]
+    end
+    ingest --> rag
+    SQLite --> Chat[問答]
+    Retrieve --> Chat
+    Chat -->|/save| SQLite
 ```
 
-### 檢索策略（三檔）
+> 完整模組表、取捨、不做清單：[ARCHITECTURE.md](ARCHITECTURE.md)
 
-| `retrieval_strategy` | 行為 | 典型用途 |
-|----------------------|------|----------|
-| `vector`（預設） | 純向量 top_k | 最快、baseline |
-| `hybrid` | BM25 + 向量 RRF → top_k | 關鍵字 + 語意 |
-| `hybrid_rerank` | hybrid 取 M=15 → cross-encoder → top_k | 最高 precision |
+### 檢索策略（進階，可選）
 
-環境變數 `RETRIEVAL_STRATEGY=hybrid_rerank` 可設全域預設；仍可用 `retrieval_mode` + `use_rerank` 分開指定（向下相容）。
+| `retrieval_strategy` | 行為 |
+|----------------------|------|
+| `vector`（預設） | 純向量 |
+| `hybrid` | BM25 + 向量 RRF |
+| `hybrid_rerank` | hybrid → cross-encoder |
 
-### Backend 對照
+### Backend（可選對照）
 
-| Backend | 檢索 | 生成 | 用途 |
-|---------|------|------|------|
-| `native` | SentenceTransformer + qdrant-client | Ollama HTTP | 預設、依賴最輕 |
-| `langchain` | LangChain Qdrant + HuggingFaceEmbeddings | 共用 Ollama | 展示 LangChain retriever |
-| `langgraph` | LangChain retriever | LangGraph retrieve→generate | 展示 workflow / agent 敘事 |
-
-> **LlamaIndex：** 未整合；架構上可替換 LangChain retriever 層，README 保留擴充空間。
+| Backend | 說明 |
+|---------|------|
+| `native` | **預設**，實際幹活 |
+| `langchain` / `langgraph` | 薄層；`uv sync --group langchain` |
 
 ---
 
-## 快速開始
+## 快速開始（工程）
 
-### 1. 安裝依賴
+### 1. 安裝依賴（[uv](https://docs.astral.sh/uv/)）
 
 ```bash
+# 安裝 uv（若尚未安裝）
+brew install uv
+
 # 核心 pipeline（步驟 1–4，native 檢索）
-pip install -r requirements.txt
+uv sync
 
 # 完整 API（含 LangChain + LangGraph）
-pip install -r requirements-langchain.txt
+uv sync --group langchain
 ```
+
+> 請勿對系統 Python 直接 `pip install`（macOS Homebrew 會阻擋）。  
+> 舊版 `requirements*.txt` 仍保留對照；日常以 `pyproject.toml` + `uv.lock` 為準。
+
+日常讀書 → **[QUICKSTART_READING.md](QUICKSTART_READING.md)**（`scripts/build_index.py` → `scripts/chat.py`）
 
 ### 2. 準備書籍
 
-將 PDF 放入 `sample_books/`（目前測試書：《納瓦爾寶典》）。
+將 PDF 放入 `sample_books/`。
 
-### 3. 建立索引（步驟 1–3）
-
-```bash
-python 1_convert_pdf_to_md.py
-python 2_chunk_and_embed.py      # 分塊實驗（可選，步驟 3 會共用分塊邏輯）
-python 3_build_qdrant.py         # Embedding + 寫入 Qdrant
-```
-
-### 4. 評測搜尋品質（步驟 4）
+### 3. 建索引 + 問答
 
 ```bash
-python 4_test_search_quality.py --preview   # 只看搜尋結果
-python 4_test_search_quality.py             # 互動評分（預設 6 題）
-python 4_test_search_quality.py --all       # 全部題目
-```
-
-### 5. LLM 問答（步驟 5，CLI）
-
-```bash
-ollama pull qwen2.5:7b-instruct-q4_K_M
 ollama serve   # 另一終端
-
-python 5_generate_answer_with_llm.py
-python 5_generate_answer_with_llm.py --demo
+uv run python scripts/build_index.py
+uv run python scripts/chat.py          # 問答；答完 /save 存筆記
 ```
 
-### 6. 啟動 API（步驟 6）
+### 4. 評測 / API（可選）
 
 ```bash
-python 6_fastapi_server.py
-# http://127.0.0.1:8000/docs
+uv run python scripts/eval.py --preview
+uv run python -m api                   # http://127.0.0.1:8000/docs
 ```
 
 ```bash
@@ -154,9 +136,9 @@ curl -X POST "http://127.0.0.1:8000/ask" \
 
 | 階段 | 腳本 | 說明 |
 |------|------|------|
-| Extract | `1_convert_pdf_to_md.py` | PDF → Markdown |
-| Transform | `2_chunk_and_embed.py` | 分塊 + 章節 metadata |
-| Load | `3_build_qdrant.py` | BGE embedding → Qdrant |
+| Extract | `ingest/converter.py` | PDF → Markdown |
+| Transform | `ingest/chunker.py` | 分塊 + 章節 metadata |
+| Load | `ingest/indexer.py` | BGE embedding → Qdrant |
 
 ```bash
 bash etl/run_pipeline.sh
@@ -199,7 +181,7 @@ curl -X POST "http://127.0.0.1:8000/search" \
 限制：
 
 - `chapter` / `heading` / `book_title` 來自 PDF 解析，標題可能不完整或與書中略有出入
-- 需先執行 `python 3_build_qdrant.py` 建立 payload TEXT index 與 `bm25_corpus.json`；舊索引請重建
+- 需先執行 `uv run python scripts/build_index.py` 建立 payload TEXT index 與 `bm25_corpus.json`；舊索引請重建
 - 即使 Qdrant 端 filter 未命中，仍會在 Python 再做一次子字串 post-filter
 
 **Hybrid 檢索**（BM25 + 向量，RRF 合併）：
@@ -232,37 +214,11 @@ curl -X POST "http://127.0.0.1:8000/search" \
 
 ---
 
-## Docker Compose
+## 部署與 CI
 
-```bash
-cp .env.example .env
-# 可選：先把索引載入 Qdrant 容器
-QDRANT_URL=http://localhost:6333 python 3_build_qdrant.py
+見 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
-docker compose up -d
-curl http://localhost:8000/health
-```
-
-服務：`qdrant`（6333）+ `postgres`（5432）+ `api`（8000）。  
-設定 `DATABASE_URL` 後，每次 `/search` 與 `/ask` 會非同步寫入 `query_logs` 表。
-
----
-
-## 測試與 CI
-
-```bash
-pip install -r requirements-test.txt
-RAG_SKIP_INIT=1 pytest -q
-ruff check rag_*.py query_log.py langchain_retriever.py 6_fastapi_server.py tests/
-```
-
-可選 pre-commit：
-
-```bash
-pip install pre-commit && pre-commit install
-```
-
-## 檢索評測（`4_test_search_quality.py`）
+## 檢索評測（`scripts/eval.py`）
 
 **量什麼：**
 
@@ -283,32 +239,7 @@ pip install pre-commit && pre-commit install
 
 ## 檔案結構
 
-```
-.
-├── 1_convert_pdf_to_md.py
-├── 2_chunk_and_embed.py         # 自研分塊（regex + overlap）
-├── 3_build_qdrant.py            # BGE embed + Qdrant 持久化
-├── 4_test_search_quality.py     # 檢索品質評測
-├── 5_generate_answer_with_llm.py  # CLI 問答
-├── 6_fastapi_server.py          # REST API（三 backend）
-├── rag_config.py                # 共用設定
-├── rag_native.py                # native pipeline
-├── langchain_retriever.py       # LangChain retriever 薄層
-├── rag_graph.py                 # LangGraph retrieve→generate
-├── requirements.txt             # 核心依賴
-├── requirements-langchain.txt   # + LangChain / LangGraph
-├── query_log.py                 # Postgres query log
-├── docker-compose.yml
-├── Dockerfile
-├── docker/init.sql
-├── etl/README.md                # ETL 流程說明
-├── requirements-test.txt        # 輕量 CI 測試依賴
-├── tests/                       # pytest 煙霧測試
-├── .github/workflows/ci.yml
-├── sample_books/
-├── outputs/
-└── qdrant_storage/              # 向量索引（gitignore）
-```
+見 [ARCHITECTURE.md#目錄結構](ARCHITECTURE.md#目錄結構)。
 
 ---
 
@@ -339,10 +270,10 @@ pip install pre-commit && pre-commit install
 ## 常見問題
 
 **Q: LangChain backend 啟動失敗？**  
-A: 執行 `pip install -r requirements-langchain.txt`。
+A: 執行 `uv sync --group langchain`。
 
 **Q: 搜尋結果差？**  
-A: 先跑 `4_test_search_quality.py --preview`，調 chunk size（預設 512）或 overlap（64），再重建索引。
+A: 先跑 `uv run python scripts/eval.py --preview`，調 chunk size（預設 512）或 overlap（64），再重建索引。
 
 **Q: Ollama 連不上？**  
 A: 另開終端執行 `ollama serve`，並確認已 pull `qwen2.5:7b-instruct-q4_K_M`。
@@ -352,8 +283,13 @@ A: `./qdrant_storage/`（持久化，刪除後需重跑步驟 3）。
 
 ---
 
-## 下一步（見 `book-spirit-Todo.md`）
+## 下一步
 
-- Phase 4：Cloud 部署（Railway / Render 等）
-- Phase 5：Prompt 版本化、回答品質 eval
-- Phase 6：履歷 / 104 同步
+| 優先 | 內容 |
+|------|------|
+| 個人 | 問答 + `/save` 累積筆記；eval 題庫自訂 |
+| 內容（C） | 從筆記生成讀書片段草稿（規劃中） |
+| 面試（B） | 依 ARCHITECTURE 練講；必要時補 eval 數字 |
+| 可選 | 上雲 Phase 4、目錄重構 |
+
+見 [Todo.md](Todo.md)。

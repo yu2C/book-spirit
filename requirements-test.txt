@@ -1,6 +1,7 @@
+# 對照用；CI 請改用：uv sync --only-group test
 # Minimal deps for pytest / ruff CI (no torch)
 pytest>=8.0.0
-httpx>=0.25.0
+httpx>=0.25.0,<0.28
 ruff>=0.6.0
 fastapi>=0.104.1
 pydantic>=2.5.0

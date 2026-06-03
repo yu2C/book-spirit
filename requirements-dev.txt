@@ -1,7 +1,0 @@
--r requirements.txt
-
-pytest>=8.0.0
-httpx>=0.25.0
-ruff>=0.6.0
-
-# 輕量 CI 測試（無 torch）請用 requirements-test.txt

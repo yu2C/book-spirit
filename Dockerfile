@@ -15,4 +15,4 @@ COPY . .
 ENV RAG_BACKEND=native
 EXPOSE 8000
 
-CMD ["python", "6_fastapi_server.py"]
+CMD ["python", "-m", "api"]

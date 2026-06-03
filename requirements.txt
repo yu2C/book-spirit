@@ -1,3 +1,4 @@
+# 對照用；請改用：uv sync
 # PDF to Markdown 轉換
 markitdown[pdf]>=0.1.0
 
@@ -20,7 +21,7 @@ requests==2.31.0
 psycopg2-binary>=2.9.9
 
 # 其他
-python-dotenv==1.0.0
+python-dotenv>=1.0.1
 
 # Hybrid BM25 + vector RRF
 rank-bm25>=0.2.2

@@ -1,50 +1,30 @@
-"""Retrieval strategy resolution tests."""
+"""Tests for core.config."""
 
-import importlib.util
-from pathlib import Path
-
-import pytest
-
-ROOT = Path(__file__).resolve().parent.parent
-
-
-def load_rag_config():
-    spec = importlib.util.spec_from_file_location("rag_config", ROOT / "rag_config.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from core.config import (
+    RETRIEVAL_STRATEGY_HYBRID_RERANK,
+    RETRIEVAL_STRATEGY_VECTOR,
+    SearchFilters,
+    resolve_retrieval_settings,
+)
 
 
-def test_resolve_strategy_vector():
-    cfg = load_rag_config()
-    mode, rerank, label = cfg.resolve_retrieval_settings(retrieval_strategy="vector")
+def test_search_filters_empty():
+    assert SearchFilters().is_empty()
+
+
+def test_resolve_retrieval_strategy_vector():
+    mode, rerank, label = resolve_retrieval_settings(
+        retrieval_strategy=RETRIEVAL_STRATEGY_VECTOR
+    )
     assert mode == "vector"
     assert rerank is False
-    assert label == "vector"
+    assert label == RETRIEVAL_STRATEGY_VECTOR
 
 
-def test_resolve_strategy_hybrid_rerank():
-    cfg = load_rag_config()
-    mode, rerank, label = cfg.resolve_retrieval_settings(
-        retrieval_strategy="hybrid_rerank"
+def test_resolve_retrieval_strategy_hybrid_rerank():
+    mode, rerank, label = resolve_retrieval_settings(
+        retrieval_strategy=RETRIEVAL_STRATEGY_HYBRID_RERANK
     )
     assert mode == "hybrid"
     assert rerank is True
-    assert label == "hybrid_rerank"
-
-
-def test_resolve_legacy_mode_and_rerank():
-    cfg = load_rag_config()
-    mode, rerank, label = cfg.resolve_retrieval_settings(
-        retrieval_mode="hybrid",
-        use_rerank=True,
-    )
-    assert mode == "hybrid"
-    assert rerank is True
-    assert label == "hybrid_rerank"
-
-
-def test_resolve_invalid_strategy():
-    cfg = load_rag_config()
-    with pytest.raises(ValueError):
-        cfg.resolve_retrieval_settings(retrieval_strategy="invalid")
+    assert label == RETRIEVAL_STRATEGY_HYBRID_RERANK

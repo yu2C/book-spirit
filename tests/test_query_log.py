@@ -7,13 +7,8 @@ import pytest
 
 @pytest.fixture
 def query_log_module():
-    import importlib.util
-    from pathlib import Path
+    from api import query_log as module
 
-    root = Path(__file__).resolve().parent.parent
-    spec = importlib.util.spec_from_file_location("query_log", root / "query_log.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
     return module
 
 

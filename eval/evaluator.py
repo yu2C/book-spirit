@@ -1,29 +1,19 @@
 """
-第四步：測試搜尋品質
-連接 3_build_qdrant.py 建立的持久化索引，用客觀指標 + 人工評分評估分塊品質。
+檢索品質評測（不含 LLM 生成）。
 
 用法：
-  python 4_test_search_quality.py              # 互動評分（預設 6 題）
-  python 4_test_search_quality.py --preview    # 只顯示搜尋結果，不問評分
-  python 4_test_search_quality.py --all        # 互動評分（全部題目）
-  python 4_test_search_quality.py --demo       # 只顯示說明與評分標準
+  uv run python scripts/eval.py              # 互動評分（預設 6 題）
+  uv run python scripts/eval.py --preview    # 只顯示搜尋結果
+  uv run python scripts/eval.py --all        # 全部題目
+  uv run python scripts/eval.py --demo       # 說明與題目列表
 """
 
 import argparse
-import importlib.util
 import json
 import sys
-from pathlib import Path
-from typing import List, Dict
-from datetime import datetime
+from typing import Dict, List
 
-# 載入步驟 3 的搜尋與索引工具
-_build_spec = importlib.util.spec_from_file_location(
-    "build_qdrant",
-    Path(__file__).parent / "3_build_qdrant.py",
-)
-_build = importlib.util.module_from_spec(_build_spec)
-_build_spec.loader.exec_module(_build)
+from ingest import indexer as _build
 
 
 class SearchQualityEvaluator:
@@ -95,7 +85,7 @@ class SearchQualityEvaluator:
         }
         self.eval_results.append(result_summary)
 
-        print(f"\n📊 結果統計:")
+        print("\n📊 結果統計:")
         print(f"   相關: {relevant_count}/3")
         print(f"   部分相關: {partial_count}/3")
         print(f"   平均相似度: {result_summary['average_score']:.3f}")
@@ -126,7 +116,7 @@ class SearchQualityEvaluator:
 
         avg_quality = sum(r["quality_score"] for r in scored) / total
         avg_similarity = sum(r["average_score"] for r in scored) / total
-        print(f"\n📈 指標:")
+        print("\n📈 指標:")
         print(f"   平均品質分數: {avg_quality:.2f} (0-1)")
         print(f"   平均相似度: {avg_similarity:.3f}")
 
@@ -204,7 +194,7 @@ def run_demo():
 📚 搜尋品質評估工具
 
 流程：
-  1. 先執行 python 3_build_qdrant.py 建立索引
+  1. 先執行 uv run python scripts/build_index.py 建立索引
   2. 本腳本對每題搜尋前 3 筆結果
   3. 你判斷 y / partial / n
   4. 輸出統計與 search_quality_report.json
@@ -225,12 +215,12 @@ def run_search_tests(
 ):
     if not _build.QDRANT_PATH.exists() or not _build.INDEX_META_FILE.exists():
         print("❌ 找不到 Qdrant 索引")
-        print("   請先執行: python 3_build_qdrant.py")
+        print("   請先執行: uv run python scripts/build_index.py")
         sys.exit(1)
 
     if mode == "hybrid" and not _build.BM25_CORPUS_FILE.exists():
         print("❌ hybrid 模式需要 BM25 語料")
-        print("   請重新執行: python 3_build_qdrant.py")
+        print("   請重新執行: uv run python scripts/build_index.py")
         sys.exit(1)
 
     meta = _build.load_index_meta()
@@ -244,7 +234,7 @@ def run_search_tests(
     model = _build.load_embedding_model(meta["embedding_model"])
     hybrid_rag = None
     if mode == "hybrid" or use_rerank:
-        from rag_native import NativeRAG
+        from core.pipeline import NativeRAG
 
         hybrid_rag = NativeRAG()
 
