@@ -39,6 +39,9 @@ sample_books/*.pdf
 .env
 .env.local
 
+# Virtualenv
+.venv/
+
 # Models (too big)
 *.safetensors
 *.bin

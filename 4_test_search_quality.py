@@ -217,19 +217,36 @@ def run_demo():
             print(f"  {i}. {q}")
 
 
-def run_search_tests(preview: bool = False, all_questions: bool = False):
+def run_search_tests(
+    preview: bool = False,
+    all_questions: bool = False,
+    mode: str = "vector",
+    use_rerank: bool = False,
+):
     if not _build.QDRANT_PATH.exists() or not _build.INDEX_META_FILE.exists():
         print("❌ 找不到 Qdrant 索引")
         print("   請先執行: python 3_build_qdrant.py")
+        sys.exit(1)
+
+    if mode == "hybrid" and not _build.BM25_CORPUS_FILE.exists():
+        print("❌ hybrid 模式需要 BM25 語料")
+        print("   請重新執行: python 3_build_qdrant.py")
         sys.exit(1)
 
     meta = _build.load_index_meta()
     print(f"📖 索引書籍: {meta['book_title']}")
     print(f"   分塊數: {meta['num_chunks']} | chunk_size={meta['chunk_size']} | overlap={meta['overlap']}")
     print(f"   儲存位置: {_build.QDRANT_PATH}")
+    print(f"   檢索模式: {mode}")
+    print(f"   Rerank: {'on' if use_rerank else 'off'}")
 
     client = _build.init_qdrant_client(recreate=False)
     model = _build.load_embedding_model(meta["embedding_model"])
+    hybrid_rag = None
+    if mode == "hybrid" or use_rerank:
+        from rag_native import NativeRAG
+
+        hybrid_rag = NativeRAG()
 
     query_map = prepare_test_queries()
     if all_questions:
@@ -248,7 +265,15 @@ def run_search_tests(preview: bool = False, all_questions: bool = False):
 
     for category, question in items:
         print(f"\n## [{category}]")
-        results = _build.search(client, model, question)
+        if mode == "hybrid" or use_rerank:
+            results = hybrid_rag.retrieve(
+                question,
+                top_k=3,
+                mode=mode,
+                use_rerank=use_rerank,
+            )
+        else:
+            results = _build.search(client, model, question)
         if preview:
             _build.print_search_results(question, results)
         else:
@@ -276,13 +301,46 @@ def main():
         action="store_true",
         help="只顯示說明與題目列表",
     )
+    parser.add_argument(
+        "--mode",
+        choices=("vector", "hybrid"),
+        default="vector",
+        help="檢索模式：vector（預設）或 hybrid（BM25 + 向量 RRF）",
+    )
+    parser.add_argument(
+        "--use-rerank",
+        action="store_true",
+        help="啟用 Cross-encoder rerank（候選 M=15 → top_k）",
+    )
+    parser.add_argument(
+        "--strategy",
+        choices=("vector", "hybrid", "hybrid_rerank"),
+        default=None,
+        help="檢索策略（等同 API retrieval_strategy，覆寫 --mode / --use-rerank）",
+    )
     args = parser.parse_args()
+
+    strategy = args.strategy
+    mode = args.mode
+    use_rerank = args.use_rerank
+    if strategy:
+        if strategy == "vector":
+            mode, use_rerank = "vector", False
+        elif strategy == "hybrid":
+            mode, use_rerank = "hybrid", False
+        else:
+            mode, use_rerank = "hybrid", True
 
     if args.demo:
         run_demo()
         return
 
-    run_search_tests(preview=args.preview, all_questions=args.all)
+    run_search_tests(
+        preview=args.preview,
+        all_questions=args.all,
+        mode=mode,
+        use_rerank=use_rerank,
+    )
 
 
 if __name__ == "__main__":

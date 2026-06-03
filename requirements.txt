@@ -8,17 +8,20 @@ torch>=2.0.0
 # 向量資料庫
 qdrant-client==1.13.0
 
-# LangChain（之後的步驟用）
-langchain==0.3.0
-langchain-community>=0.0.10
-
 # FastAPI 和 Web 服務器
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-pydantic==2.5.0
+pydantic>=2.5.0
 
 # HTTP 請求（呼叫 Ollama）
 requests==2.31.0
 
+# Postgres query log（DATABASE_URL 設定時啟用）
+psycopg2-binary>=2.9.9
+
 # 其他
 python-dotenv==1.0.0
+
+# Hybrid BM25 + vector RRF
+rank-bm25>=0.2.2
+# Reranker uses sentence-transformers CrossEncoder (same package as embedding)

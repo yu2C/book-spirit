@@ -1,0 +1,18 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt requirements-langchain.txt ./
+RUN pip install --no-cache-dir -r requirements-langchain.txt \
+    && pip install --no-cache-dir psycopg2-binary
+
+COPY . .
+
+ENV RAG_BACKEND=native
+EXPOSE 8000
+
+CMD ["python", "6_fastapi_server.py"]

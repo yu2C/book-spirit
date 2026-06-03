@@ -1,0 +1,9 @@
+# Minimal deps for pytest / ruff CI (no torch)
+pytest>=8.0.0
+httpx>=0.25.0
+ruff>=0.6.0
+fastapi>=0.104.1
+pydantic>=2.5.0
+requests>=2.31.0
+psycopg2-binary>=2.9.9
+uvicorn>=0.24.0

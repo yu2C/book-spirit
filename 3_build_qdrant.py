@@ -15,7 +15,9 @@ from datetime import datetime
 
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, VectorParams, Distance
+from qdrant_client.models import PointStruct, VectorParams, Distance, PayloadSchemaType
+
+from rag_config import BM25_CORPUS_FILE, QDRANT_URL, create_qdrant_client
 
 # 從步驟 2 共用分塊邏輯
 _chunk_spec = importlib.util.spec_from_file_location(
@@ -75,8 +77,13 @@ def embed_chunks(
 
 
 def init_qdrant_client(recreate: bool = False, vector_dim: int = 512) -> QdrantClient:
-    QDRANT_PATH.mkdir(parents=True, exist_ok=True)
-    client = QdrantClient(path=str(QDRANT_PATH))
+    if QDRANT_URL:
+        client = create_qdrant_client()
+        print(f"🔄 連接 Qdrant: {QDRANT_URL}")
+    else:
+        QDRANT_PATH.mkdir(parents=True, exist_ok=True)
+        client = create_qdrant_client()
+        print(f"🔄 初始化 Qdrant（持久化: {QDRANT_PATH}）...")
 
     if recreate:
         try:
@@ -96,6 +103,20 @@ def init_qdrant_client(recreate: bool = False, vector_dim: int = 512) -> QdrantC
             )
 
     return client
+
+
+def ensure_payload_indexes(client: QdrantClient):
+    """TEXT index for metadata filter (chapter / heading / book_title)."""
+    for field in ("chapter", "heading", "book_title"):
+        try:
+            client.create_payload_index(
+                collection_name=COLLECTION_NAME,
+                field_name=field,
+                field_schema=PayloadSchemaType.TEXT,
+            )
+            print(f"   payload index: {field}")
+        except Exception as exc:
+            print(f"   payload index {field} 略過: {exc}")
 
 
 def upload_to_qdrant(
@@ -120,6 +141,25 @@ def upload_to_qdrant(
 
     client.upsert(collection_name=COLLECTION_NAME, points=points)
     print(f"✅ 上傳完成: {len(points)} 個向量")
+
+
+def save_bm25_corpus(chunks: List[Chunk], book_title: str):
+    records = [
+        {
+            "chunk_id": chunk.chunk_id,
+            "text": chunk.text,
+            "chapter": chunk.chapter,
+            "heading": chunk.heading,
+            "page": chunk.page,
+            "book_title": book_title,
+            "point_id": index + 1,
+        }
+        for index, chunk in enumerate(chunks)
+    ]
+    BM25_CORPUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(BM25_CORPUS_FILE, "w", encoding="utf-8") as handle:
+        json.dump(records, handle, ensure_ascii=False, indent=2)
+    print(f"💾 BM25 語料: {BM25_CORPUS_FILE} ({len(records)} chunks)")
 
 
 def save_index_meta(book_title: str, num_chunks: int, vector_dim: int):
@@ -209,7 +249,9 @@ def build_index():
 
     print(f"\n🔄 初始化 Qdrant（持久化: {QDRANT_PATH}）...")
     client = init_qdrant_client(recreate=True, vector_dim=vector_dim)
+    ensure_payload_indexes(client)
     upload_to_qdrant(client, chunks, embeddings, book_title=book_title)
+    save_bm25_corpus(chunks, book_title)
     save_index_meta(book_title, len(chunks), vector_dim)
 
     return client, model, chunks

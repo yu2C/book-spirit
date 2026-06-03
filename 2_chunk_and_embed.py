@@ -1,8 +1,6 @@
 """
 第二步：Markdown → 分塊 + 提取元數據
 實驗不同的分塊大小，提取章節結構
-
-安裝：pip install langchain
 """
 
 import re
