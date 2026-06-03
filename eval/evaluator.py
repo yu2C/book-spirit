@@ -218,14 +218,21 @@ def run_search_tests(
         print("   請先執行: uv run python scripts/build_index.py")
         sys.exit(1)
 
-    if mode == "hybrid" and not _build.BM25_CORPUS_FILE.exists():
+    from core.hybrid import resolve_bm25_paths
+
+    if mode == "hybrid" and not resolve_bm25_paths(None):
         print("❌ hybrid 模式需要 BM25 語料")
-        print("   請重新執行: uv run python scripts/build_index.py")
+        print("   請重新執行: uv run python scripts/build_index.py --all")
         sys.exit(1)
 
     meta = _build.load_index_meta()
-    print(f"📖 索引書籍: {meta['book_title']}")
-    print(f"   分塊數: {meta['num_chunks']} | chunk_size={meta['chunk_size']} | overlap={meta['overlap']}")
+    books = meta.get("books") or {}
+    if books:
+        summary = ", ".join(f"{bid}({info.get('num_chunks', 0)})" for bid, info in books.items())
+        print(f"📖 索引書籍: {summary}")
+    else:
+        print(f"📖 索引書籍: {meta.get('book_title', '(legacy)')}")
+    print(f"   chunk_size={meta.get('chunk_size')} | overlap={meta.get('overlap')}")
     print(f"   儲存位置: {_build.QDRANT_PATH}")
     print(f"   檢索模式: {mode}")
     print(f"   Rerank: {'on' if use_rerank else 'off'}")

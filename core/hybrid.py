@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from core.config import (
     BM25_CORPUS_FILE,
@@ -17,21 +17,19 @@ from core.config import (
 
 logger = logging.getLogger(__name__)
 
-_bm25_index: "BM25Index | None" = None
+_bm25_cache: Dict[Tuple[str, ...], "BM25Index"] = {}
 
 
 def tokenize_zh(text: str) -> List[str]:
-    """Character-level tokens for Chinese BM25 (no jieba dependency)."""
     return [char for char in text.lower() if not char.isspace()]
 
 
 def rrf_merge(
     ranked_lists: List[List[Dict[str, Any]]],
     top_k: int,
-    id_key: str = "chunk_id",
+    id_key: str = "point_id",
     rrf_k: int = RRF_K,
 ) -> List[Dict[str, Any]]:
-    """Merge multiple ranked doc lists with Reciprocal Rank Fusion."""
     scores: Dict[Any, float] = {}
     doc_by_id: Dict[Any, Dict[str, Any]] = {}
 
@@ -39,7 +37,7 @@ def rrf_merge(
         for rank, doc in enumerate(ranked):
             doc_id = doc.get(id_key)
             if doc_id is None:
-                continue
+                doc_id = f"{doc.get('book_id')}:{doc.get('chunk_id')}"
             scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (rrf_k + rank + 1)
             if doc_id not in doc_by_id:
                 doc_by_id[doc_id] = doc.copy()
@@ -63,14 +61,17 @@ class BM25Index:
         self.bm25 = BM25Okapi(tokenized)
 
     @classmethod
-    def load(cls, corpus_path: Path | str = BM25_CORPUS_FILE) -> "BM25Index":
-        path = Path(corpus_path)
-        if not path.exists():
+    def load_paths(cls, paths: List[Path]) -> "BM25Index":
+        records: List[Dict[str, Any]] = []
+        for path in paths:
+            if not path.exists():
+                continue
+            with open(path, encoding="utf-8") as handle:
+                records.extend(json.load(handle))
+        if not records:
             raise FileNotFoundError(
-                f"BM25 語料不存在: {path}，請執行 uv run python scripts/build_index.py 重建索引"
+                "找不到 BM25 語料，請執行: uv run python scripts/build_index.py --all"
             )
-        with open(path, encoding="utf-8") as handle:
-            records = json.load(handle)
         tokenized = [tokenize_zh(record.get("text", "")) for record in records]
         return cls(records, tokenized)
 
@@ -87,22 +88,18 @@ class BM25Index:
         candidate_indices = list(range(len(self.records)))
         if filters and not filters.is_empty():
             filtered_records = apply_payload_filters(self.records, filters)
-            allowed_ids = {record.get("chunk_id") for record in filtered_records}
+            allowed_ids = {record.get("point_id") or f"{record.get('book_id')}:{record.get('chunk_id')}" for record in filtered_records}
             candidate_indices = [
                 index
                 for index, record in enumerate(self.records)
-                if record.get("chunk_id") in allowed_ids
+                if (record.get("point_id") or f"{record.get('book_id')}:{record.get('chunk_id')}") in allowed_ids
             ]
 
         if not candidate_indices:
             return []
 
         scores = self.bm25.get_scores(query_tokens)
-        ranked = sorted(
-            candidate_indices,
-            key=lambda index: scores[index],
-            reverse=True,
-        )
+        ranked = sorted(candidate_indices, key=lambda index: scores[index], reverse=True)
 
         results: List[Dict[str, Any]] = []
         for index in ranked[:top_k]:
@@ -114,20 +111,31 @@ class BM25Index:
         return results
 
 
-def get_bm25_index(corpus_path: Path | str = BM25_CORPUS_FILE) -> BM25Index:
-    global _bm25_index
-    if _bm25_index is None:
-        _bm25_index = BM25Index.load(corpus_path)
-    return _bm25_index
+def resolve_bm25_paths(filters: SearchFilters | None) -> List[Path]:
+    from ingest.indexer import bm25_path, list_indexed_book_ids
+
+    if filters and filters.book_id:
+        return [bm25_path(filters.book_id)]
+    paths = [bm25_path(bid) for bid in list_indexed_book_ids()]
+    if BM25_CORPUS_FILE.exists():
+        paths.append(BM25_CORPUS_FILE)
+    return [p for p in paths if p.exists()]
+
+
+def get_bm25_index(filters: SearchFilters | None = None) -> BM25Index:
+    paths = resolve_bm25_paths(filters)
+    key = tuple(str(p) for p in paths)
+    if key not in _bm25_cache:
+        _bm25_cache[key] = BM25Index.load_paths(paths)
+    return _bm25_cache[key]
 
 
 def bm25_search(
     query: str,
     top_k: int = RETRIEVE_CANDIDATES,
     filters: SearchFilters | None = None,
-    corpus_path: Path | str = BM25_CORPUS_FILE,
 ) -> List[Dict[str, Any]]:
-    index = get_bm25_index(corpus_path)
+    index = get_bm25_index(filters)
     return index.search(query, top_k=top_k, filters=filters)
 
 
@@ -138,7 +146,6 @@ def hybrid_retrieve(
     filters: SearchFilters | None = None,
     candidates: int = RETRIEVE_CANDIDATES,
 ) -> List[Dict[str, Any]]:
-    """Vector + BM25 candidate retrieval merged with RRF."""
     try:
         bm25_docs = bm25_search(query, top_k=candidates, filters=filters)
     except FileNotFoundError as exc:

@@ -62,19 +62,44 @@ def _prompt() -> str:
 from core.pipeline import NativeRAG  # noqa: E402
 from memory.store import ReadingMemory  # noqa: E402
 
-SLASH_COMMANDS = ("/help", "/h", "/save", "/s", "/book", "/profile")
+SLASH_COMMANDS = ("/help", "/h", "/save", "/s", "/book", "/books", "/profile")
 
 SLASH_HELP = """
-📌 斜線指令（先問答再 /save；隨時可用 /book、/profile、/help）：
+📌 斜線指令（先問答再 /save）：
   /help 或 /h        顯示本說明
-  /save 或 /s        把上一則 AI 回答存成筆記
-  /save 你的心得     心得用你寫的這句（書摘仍取自上一則來源）
-  /book 書籍id       設定目前書籍（例：/book naval-almanack）
-  /book              只顯示目前 book_id
-  /profile           查看個人簡述
-  /profile 文字      設定簡述（會影響之後回答）
+  /books             列出已登錄書目與 book_id（slug 來自 PDF 檔名）
+  /book 書籍id       只檢索該書原文（預設）
+  /book all          跨書檢索所有已索引書籍
+  /book              顯示目前範圍
+  /save 或 /s        存上一則 AI 回答
+  /profile 文字      讀者偏好
   quit 或 q          離開
 """
+
+
+def _default_book_id() -> str:
+    from ingest.books_registry import list_pdf_books
+    from ingest.indexer import list_indexed_book_ids
+
+    indexed = list_indexed_book_ids()
+    if indexed:
+        return indexed[0]
+    pdfs = list_pdf_books()
+    if pdfs:
+        return pdfs[0][0]
+    return os.getenv("DEFAULT_BOOK_ID", "naval-almanack")
+
+
+def _print_books() -> None:
+    from ingest.books_registry import load_registry
+
+    reg = load_registry()
+    if not reg:
+        print("（尚無書目 → uv run python scripts/build_index.py --all）")
+        return
+    for bid, entry in sorted(reg.items()):
+        flag = "📗" if entry.status == "indexed" else "📦"
+        print(f"  {flag} {bid}  [{entry.status}]  {entry.book_title[:60]}")
 
 
 def _print_answer(result: dict) -> None:
@@ -136,12 +161,18 @@ def _slash(line: str, last_result: dict | None, memory: ReadingMemory, book_id: 
     elif cmd in ("/save", "/s"):
         custom = parts[1].strip() if len(parts) > 1 else None
         _save_note(last_result, memory, book_id, custom)
+    elif cmd == "/books":
+        _print_books()
     elif cmd == "/book":
         if len(parts) > 1:
             book_id = parts[1].strip()
-            print(f"✅ book_id = {book_id}")
+            if book_id == "all":
+                print("✅ 檢索範圍 = 所有已索引書籍（/book all）")
+            else:
+                print(f"✅ 檢索範圍 = 僅 {book_id}")
         else:
-            print(f"目前 book_id = {book_id}")
+            scope = "所有已索引書籍" if book_id == "all" else f"僅 {book_id}"
+            print(f"目前檢索：{scope}")
     elif cmd == "/profile":
         rest = line.strip()[len("/profile") :].strip()
         if rest:
@@ -156,14 +187,15 @@ def _slash(line: str, last_result: dict | None, memory: ReadingMemory, book_id: 
 def main() -> None:
     rag = NativeRAG()
     memory = ReadingMemory()
-    book_id = os.getenv("DEFAULT_BOOK_ID", "naval-almanack")
+    book_id = os.getenv("DEFAULT_BOOK_ID") or _default_book_id()
 
     if not rag.check_ollama_health():
         print("❌ 請先執行：ollama serve")
         sys.exit(1)
 
     print("📚 Book Spirit 問答")
-    print(f"book_id: {book_id}")
+    scope = "全部已索引" if book_id == "all" else book_id
+    print(f"檢索範圍: {scope}（/book all 跨書；/books 列書目）")
     print(SLASH_HELP)
     if _setup_readline():
         print("⌨️  已啟用終端行編輯（←→ 移動游標，↑↓ 歷史輸入）")

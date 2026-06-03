@@ -89,9 +89,10 @@ class SearchFilters:
     chapter: Optional[str] = None
     heading: Optional[str] = None
     book_title: Optional[str] = None
+    book_id: Optional[str] = None
 
     def is_empty(self) -> bool:
-        return not any((self.chapter, self.heading, self.book_title))
+        return not any((self.chapter, self.heading, self.book_title, self.book_id))
 
 
 def build_qdrant_filter(filters: SearchFilters | None):
@@ -110,6 +111,12 @@ def build_qdrant_filter(filters: SearchFilters | None):
         must.append(
             FieldCondition(key="book_title", match=MatchText(text=filters.book_title))
         )
+    if filters.book_id:
+        from qdrant_client.models import MatchValue
+
+        must.append(
+            FieldCondition(key="book_id", match=MatchValue(value=filters.book_id))
+        )
     return Filter(must=must)
 
 
@@ -125,6 +132,8 @@ def apply_payload_filters(docs: list[dict], filters: SearchFilters | None) -> li
         if filters.heading and filters.heading not in (doc.get("heading") or ""):
             continue
         if filters.book_title and filters.book_title not in (doc.get("book_title") or ""):
+            continue
+        if filters.book_id and doc.get("book_id") != filters.book_id:
             continue
         filtered.append(doc)
     return filtered

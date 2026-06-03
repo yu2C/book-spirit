@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import requests
 from sentence_transformers import SentenceTransformer
 
+from core.books import BOOK_SCOPE_ALL, resolve_ask_context
 from core.config import (
     COLLECTION_NAME,
     DEFAULT_TOP_K,
@@ -56,9 +57,10 @@ def hits_to_docs(points) -> List[Dict[str, Any]]:
                 "chapter": payload.get("chapter", ""),
                 "heading": payload.get("heading", ""),
                 "page": payload.get("page", 0),
+                "book_id": payload.get("book_id", ""),
                 "book_title": payload.get("book_title", ""),
                 "chunk_id": payload.get("chunk_id"),
-                "point_id": point.id,
+                "point_id": str(point.id),
             }
         )
     return docs
@@ -210,29 +212,44 @@ class NativeRAG:
 
         memory_block = ""
         user_profile = ""
+
+
+        ctx = resolve_ask_context(book_id)
+        if filters is not None and not filters.is_empty():
+            search_filters = filters
+        else:
+            search_filters = ctx.rag_filters
+
+        memory_book_id = None if book_id == BOOK_SCOPE_ALL else ctx.memory_book_id
         if use_memory:
             try:
                 from memory.store import ReadingMemory, format_notes_for_prompt
 
                 memory = ReadingMemory()
-                notes = memory.search_relevant(question, book_id=book_id, limit=5)
+                notes = memory.search_relevant(question, book_id=memory_book_id, limit=5)
                 memory_block = format_notes_for_prompt(notes)
                 user_profile = memory.get_profile()
                 memory_notes_used = [n.to_dict() for n in notes]
             except Exception:
                 pass
 
-        retrieved = self.retrieve(
-            question,
-            top_k=top_k,
-            filters=filters,
-            mode=mode,
-            use_rerank=use_rerank,
-        )
+        if not ctx.rag_enabled:
+            retrieved = []
+        else:
+            retrieved = self.retrieve(
+                question,
+                top_k=top_k,
+                filters=search_filters,
+                mode=mode,
+                use_rerank=use_rerank,
+            )
         if not retrieved:
+            hint = ctx.hint or "❌ 未找到相關內容"
+            if ctx.rag_enabled and not ctx.hint:
+                hint = "❌ 未找到相關內容（可試 /book all 或確認已 build_index --book）"
             return {
                 "question": question,
-                "answer": "❌ 未找到相關內容",
+                "answer": hint,
                 "sources": [],
                 "memory_notes_used": memory_notes_used,
                 "time_elapsed": time.time() - start_time,

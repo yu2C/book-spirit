@@ -12,9 +12,10 @@ uv sync
 ollama pull qwen2.5:7b-instruct-q4_K_M
 ollama serve   # 另開終端
 
-# PDF 放入 sample_books/（索引已存在且 PDF 沒改會自動跳過）
-uv run python scripts/build_index.py
-# 換書或改過 PDF 後強制重建：加 --force
+# PDF 放入 sample_books/
+uv run python scripts/build_index.py --all    # 索引所有 PDF（增量，不覆蓋其他書）
+# 單本：--book <book_id>   書目：--list   封存(僅筆記)：--archive <book_id>
+# 改過 PDF 後：--book <id> --force
 ```
 
 ---
@@ -33,7 +34,10 @@ uv run python scripts/chat.py
 | 說明 | `/help` 或 `/h` |
 | 存筆記 | `/save` 或 `/s`（需先有一則 AI 回答） |
 | 只存你的話 | `/save 我的一句心得` |
-| 換書 | `/book naval-almanack` |
+| 列書目 | `/books`（book_id 由 PDF 檔名自動 slug） |
+| 只問當前書 | `/book <book_id>`（預設） |
+| 跨書問原文 | `/book all` |
+| 封存舊書 | `build_index.py --archive <id>`（向量刪除，筆記保留） |
 | 查看偏好 | `/profile` |
 | 設定偏好 | `/profile 我喜歡簡短回答` |
 | 離開 | `quit` 或 `q` |

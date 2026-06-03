@@ -151,3 +151,15 @@ query + optional filters (chapter/heading)
 - [ ] **5.9** 題庫 `eval/test_cases.json`（由你手寫）
 - [ ] **5.10** 從筆記生成讀書片段草稿（`scripts/generate_posts.py`）
 - [ ] **5.11** 筆記向量搜尋（多書後再考慮）
+
+---
+
+## Phase 6 — 多書架構（3+4+5）
+
+- [x] **6.1** `books_registry.json` + PDF 自動 `book_id`（slug）
+- [x] **6.2** `build_index --all` / `--book` / `--archive` / `--list`（增量 upsert）
+- [x] **6.3** 每書 `bm25_{book_id}.json`；Qdrant payload `book_id`
+- [x] **6.4** `chat`：`/books`、`/book all`、預設只檢索當前書
+- [x] **6.5** 封存書僅 Memory（`resolve_ask_context`）
+- [ ] **6.6** 從舊版單書索引遷移說明 / 一鍵 migrate 腳本
+- [ ] **6.7** API `/ask` 文件補充 `book_id` / `all` 行為

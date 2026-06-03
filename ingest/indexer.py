@@ -1,20 +1,27 @@
 """
-第三步：Embedding + Qdrant 寫入
-用 BGE-small-zh embedding，寫入本地 Qdrant（持久化到 ./qdrant_storage）
-
-安裝：
-pip install sentence-transformers qdrant-client
+第三步：Embedding + Qdrant 寫入（多書 incremental）
 """
+
+from __future__ import annotations
 
 import json
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PayloadSchemaType, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PayloadSchemaType,
+    PointStruct,
+    VectorParams,
+)
 from sentence_transformers import SentenceTransformer
 
 from core.config import (
@@ -26,6 +33,18 @@ from core.config import (
     QDRANT_URL,
     create_qdrant_client,
 )
+from ingest.books_registry import (
+    STATUS_ARCHIVED,
+    STATUS_INDEXED,
+    BookEntry,
+    ensure_entry_for_pdf,
+    get_book,
+    load_registry,
+    md_path_for_pdf,
+    set_book_status,
+    slug_from_pdf,
+    upsert_registry_entry,
+)
 from ingest.chunker import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_OVERLAP,
@@ -34,21 +53,87 @@ from ingest.chunker import (
 )
 
 INDEX_META_FILE = QDRANT_PATH / "index_meta.json"
+_POINT_NS = uuid.UUID("a3f2c8e1-4b5d-4e9a-9c7d-1e2f3a4b5c6d")
 
 
 @dataclass
 class BuildState:
-    """Whether ingest steps can be skipped."""
-
     skip_all: bool
     run_convert: bool
     run_index: bool
     message: str
+    book_id: str = ""
     meta: Optional[Dict[str, Any]] = None
 
 
-def md_path_for_pdf(pdf_path: Path) -> Path:
-    return OUTPUTS_DIR / f"{pdf_path.stem}.md"
+def bm25_path(book_id: str) -> Path:
+    return QDRANT_PATH / f"bm25_{book_id}.json"
+
+
+def make_point_id(book_id: str, chunk_id: int) -> str:
+    return str(uuid.uuid5(_POINT_NS, f"{book_id}:{chunk_id}"))
+
+
+def load_library_meta_optional() -> Optional[Dict[str, Any]]:
+    if not INDEX_META_FILE.exists():
+        return None
+    with open(INDEX_META_FILE, encoding="utf-8") as handle:
+        raw = json.load(handle)
+    if raw.get("version") == 2:
+        return raw
+    # Legacy single-book meta → v2 shape in memory
+    book_title = raw.get("book_title", "legacy")
+    bid = slug_from_pdf(Path(raw.get("source_pdf", book_title + ".pdf")))
+    return {
+        "version": 2,
+        "embedding_model": raw.get("embedding_model"),
+        "collection_name": raw.get("collection_name", COLLECTION_NAME),
+        "books": {
+            bid: {
+                "book_title": book_title,
+                "num_chunks": raw.get("num_chunks", 0),
+                "source_pdf": raw.get("source_pdf"),
+                "source_pdf_mtime": raw.get("source_pdf_mtime"),
+                "source_md": raw.get("source_md"),
+                "built_at": raw.get("built_at"),
+            }
+        },
+    }
+
+
+def save_library_meta(books_meta: Dict[str, Dict[str, Any]], vector_dim: int) -> None:
+    payload = {
+        "version": 2,
+        "embedding_model": EMBEDDING_MODEL,
+        "chunk_size": DEFAULT_CHUNK_SIZE,
+        "overlap": DEFAULT_OVERLAP,
+        "vector_dim": vector_dim,
+        "collection_name": COLLECTION_NAME,
+        "updated_at": datetime.now().isoformat(),
+        "books": books_meta,
+    }
+    INDEX_META_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(INDEX_META_FILE, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    print(f"💾 索引資訊: {INDEX_META_FILE}")
+
+
+def is_book_indexed(book_id: str) -> bool:
+    entry = get_book(book_id)
+    if not entry or entry.status != STATUS_INDEXED:
+        return False
+    if not bm25_path(book_id).exists():
+        return False
+    lib = load_library_meta_optional()
+    if not lib or lib.get("embedding_model") != EMBEDDING_MODEL:
+        return False
+    if book_id not in (lib.get("books") or {}):
+        return False
+    try:
+        client = create_qdrant_client()
+        return client.collection_exists(COLLECTION_NAME) and _collection_point_count(client) > 0
+    except Exception:
+        return False
 
 
 def _collection_point_count(client: QdrantClient) -> int:
@@ -58,114 +143,80 @@ def _collection_point_count(client: QdrantClient) -> int:
     return int(getattr(info, "points_count", 0) or 0)
 
 
-def load_index_meta_optional() -> Optional[Dict[str, Any]]:
-    if not INDEX_META_FILE.exists():
-        return None
-    with open(INDEX_META_FILE, encoding="utf-8") as handle:
-        return json.load(handle)
-
-
-def is_index_complete(meta: Optional[Dict[str, Any]] = None) -> bool:
-    meta = meta or load_index_meta_optional()
-    if not meta or not BM25_CORPUS_FILE.exists():
-        return False
-    if meta.get("embedding_model") != EMBEDDING_MODEL:
-        return False
-    try:
-        client = create_qdrant_client()
-        return _collection_point_count(client) > 0
-    except Exception:
-        return False
-
-
-def sources_unchanged(pdf_path: Path, meta: Dict[str, Any], md_path: Path) -> bool:
-    """True if PDF has not changed since the indexed sources were produced."""
+def sources_unchanged(pdf_path: Path, entry: BookEntry, md_path: Path) -> bool:
     pdf_mtime = pdf_path.stat().st_mtime
-
-    recorded = meta.get("source_pdf_mtime")
-    if recorded is not None:
-        return pdf_mtime <= float(recorded) + 1e-3
-
-    # 舊版 index_meta（無 mtime）：用 MD 是否比 PDF 新來判斷
-    for candidate in (md_path, meta.get("source_md")):
-        if not candidate:
-            continue
-        path = Path(candidate)
-        if path.exists() and pdf_mtime <= path.stat().st_mtime + 1e-3:
-            return True
+    if entry.source_pdf_mtime is not None:
+        return pdf_mtime <= float(entry.source_pdf_mtime) + 1e-3
+    if md_path.exists():
+        return pdf_mtime <= md_path.stat().st_mtime + 1e-3
     return False
 
 
-def backfill_index_meta_sources(pdf_path: Path, md_path: Path) -> None:
-    """補寫 source_pdf_mtime，避免舊索引每次都被迫重建。"""
-    meta = load_index_meta_optional()
-    if not meta or meta.get("source_pdf_mtime") is not None:
-        return
-    meta["source_pdf"] = str(pdf_path.resolve())
-    meta["source_pdf_mtime"] = pdf_path.stat().st_mtime
-    meta["source_md"] = str(md_path.resolve())
-    with open(INDEX_META_FILE, "w", encoding="utf-8") as handle:
-        json.dump(meta, handle, ensure_ascii=False, indent=2)
-
-
-def assess_build_state(pdf_path: Path, *, force: bool = False) -> BuildState:
+def assess_build_state(
+    pdf_path: Path,
+    book_id: str,
+    *,
+    force: bool = False,
+) -> BuildState:
     pdf_path = pdf_path.resolve()
     md_path = md_path_for_pdf(pdf_path)
-    meta = load_index_meta_optional()
+    entry = ensure_entry_for_pdf(pdf_path, book_id=book_id)
 
     if force:
         return BuildState(
             skip_all=False,
             run_convert=True,
             run_index=True,
-            message="--force：將重新轉換並重建索引",
-            meta=meta,
+            message=f"--force：將重新索引 {book_id}",
+            book_id=book_id,
         )
 
-    index_ok = is_index_complete(meta)
-    unchanged = bool(meta and sources_unchanged(pdf_path, meta, md_path))
+    if entry.status == STATUS_ARCHIVED and not force:
+        return BuildState(
+            skip_all=False,
+            run_convert=False,
+            run_index=False,
+            message=(
+                f"書籍 {book_id} 已封存。若要重新全文索引：\n"
+                f"   uv run python scripts/build_index.py --book {book_id} --force"
+            ),
+            book_id=book_id,
+        )
+
+    index_ok = is_book_indexed(book_id)
+    unchanged = sources_unchanged(pdf_path, entry, md_path)
 
     if index_ok and unchanged:
-        backfill_index_meta_sources(pdf_path, md_path)
         return BuildState(
             skip_all=True,
             run_convert=False,
             run_index=False,
             message=(
-                f"✅ 索引已存在且 PDF 未變更，跳過重建。\n"
-                f"   書名: {meta.get('book_title')}\n"
-                f"   分塊: {meta.get('num_chunks')} | 模型: {meta.get('embedding_model')}\n"
-                f"   建立於: {meta.get('built_at')}\n"
-                f"   若要強制重建: uv run python scripts/build_index.py --force"
+                f"✅ [{book_id}] 索引已存在且 PDF 未變更，跳過。\n"
+                f"   書名: {entry.book_title}\n"
+                f"   分塊: {entry.num_chunks}\n"
+                f"   強制重建: uv run python scripts/build_index.py --book {book_id} --force"
             ),
-            meta=meta,
+            book_id=book_id,
         )
 
     md_fresh = md_path.exists() and md_path.stat().st_mtime >= pdf_path.stat().st_mtime - 1e-3
     run_convert = not md_fresh
     run_index = not index_ok or not unchanged
-
     parts = []
     if run_convert:
         parts.append("PDF→MD")
     if run_index:
         parts.append("建索引")
-    message = "將執行：" + "、".join(parts) if parts else "無需變更"
+    message = f"[{book_id}] " + ("將執行：" + "、".join(parts) if parts else "無需變更")
 
     return BuildState(
         skip_all=False,
         run_convert=run_convert,
         run_index=run_index,
         message=message,
-        meta=meta,
+        book_id=book_id,
     )
-
-
-def get_md_path() -> Path:
-    md_files = sorted(OUTPUTS_DIR.glob("*.md"))
-    if not md_files:
-        raise FileNotFoundError("找不到 outputs/*.md，請先執行 ingest/converter 或 scripts/build_index.py")
-    return md_files[0]
 
 
 def load_embedding_model(model_name: str = EMBEDDING_MODEL) -> SentenceTransformer:
@@ -176,7 +227,6 @@ def load_embedding_model(model_name: str = EMBEDDING_MODEL) -> SentenceTransform
 
 
 def encode_query(model: SentenceTransformer, query: str) -> List[float]:
-    """BGE 中文模型：查詢需加 query: 前綴。"""
     return model.encode([f"query: {query}"], normalize_embeddings=True)[0].tolist()
 
 
@@ -199,60 +249,68 @@ def embed_chunks(
     return embeddings.tolist()
 
 
-def init_qdrant_client(recreate: bool = False, vector_dim: int = 512) -> QdrantClient:
+def ensure_collection(client: QdrantClient, vector_dim: int) -> None:
     if QDRANT_URL:
-        client = create_qdrant_client()
         print(f"🔄 連接 Qdrant: {QDRANT_URL}")
     else:
         QDRANT_PATH.mkdir(parents=True, exist_ok=True)
-        client = create_qdrant_client()
-        print(f"🔄 初始化 Qdrant（持久化: {QDRANT_PATH}）...")
-
-    if recreate:
-        try:
-            client.delete_collection(COLLECTION_NAME)
-            print(f"   清除舊集合: {COLLECTION_NAME}")
-        except Exception:
-            pass
+        print(f"🔄 Qdrant（持久化: {QDRANT_PATH}）...")
+    if not client.collection_exists(COLLECTION_NAME):
         client.create_collection(
             collection_name=COLLECTION_NAME,
             vectors_config=VectorParams(size=vector_dim, distance=Distance.COSINE),
         )
-        print(f"✅ 集合建立: {COLLECTION_NAME}（向量維度: {vector_dim}）")
-    else:
-        if not client.collection_exists(COLLECTION_NAME):
-            raise RuntimeError(
-                f"集合 {COLLECTION_NAME} 不存在，請先執行: uv run python scripts/build_index.py"
-            )
-
-    return client
+        print(f"✅ 建立集合: {COLLECTION_NAME}（維度 {vector_dim}）")
 
 
 def ensure_payload_indexes(client: QdrantClient):
-    """TEXT index for metadata filter (chapter / heading / book_title)."""
-    for field in ("chapter", "heading", "book_title"):
+    for field, schema in (
+        ("chapter", PayloadSchemaType.TEXT),
+        ("heading", PayloadSchemaType.TEXT),
+        ("book_title", PayloadSchemaType.TEXT),
+        ("book_id", PayloadSchemaType.KEYWORD),
+    ):
         try:
             client.create_payload_index(
                 collection_name=COLLECTION_NAME,
                 field_name=field,
-                field_schema=PayloadSchemaType.TEXT,
+                field_schema=schema,
             )
             print(f"   payload index: {field}")
         except Exception as exc:
             print(f"   payload index {field} 略過: {exc}")
 
 
+def delete_vectors_for_book(client: QdrantClient, book_id: str) -> None:
+    if not client.collection_exists(COLLECTION_NAME):
+        return
+    try:
+        client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=Filter(
+                must=[FieldCondition(key="book_id", match=MatchValue(value=book_id))]
+            ),
+        )
+        print(f"   已移除 Qdrant 中 book_id={book_id} 的向量")
+    except Exception as exc:
+        print(f"   移除舊向量略過: {exc}")
+
+
 def upload_to_qdrant(
     client: QdrantClient,
     chunks: List[Chunk],
     embeddings: List[List[float]],
+    *,
+    book_id: str,
     book_title: str,
 ):
-    print("\n🔄 上傳到 Qdrant...")
+    print("\n🔄 上傳到 Qdrant（upsert）...")
     points = []
-    for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+    for chunk, embedding in zip(chunks, embeddings):
+        pid = make_point_id(book_id, chunk.chunk_id)
         payload = {
             "text": chunk.text,
+            "book_id": book_id,
             "book_title": book_title,
             "chapter": chunk.chapter,
             "heading": chunk.heading,
@@ -260,13 +318,13 @@ def upload_to_qdrant(
             "chunk_id": chunk.chunk_id,
             "indexed_at": datetime.now().isoformat(),
         }
-        points.append(PointStruct(id=i + 1, vector=embedding, payload=payload))
-
+        points.append(PointStruct(id=pid, vector=embedding, payload=payload))
     client.upsert(collection_name=COLLECTION_NAME, points=points)
-    print(f"✅ 上傳完成: {len(points)} 個向量")
+    print(f"✅ 上傳完成: {len(points)} 個向量（{book_id}）")
 
 
-def save_bm25_corpus(chunks: List[Chunk], book_title: str):
+def save_bm25_corpus(chunks: List[Chunk], *, book_id: str, book_title: str):
+    path = bm25_path(book_id)
     records = [
         {
             "chunk_id": chunk.chunk_id,
@@ -274,160 +332,166 @@ def save_bm25_corpus(chunks: List[Chunk], book_title: str):
             "chapter": chunk.chapter,
             "heading": chunk.heading,
             "page": chunk.page,
+            "book_id": book_id,
             "book_title": book_title,
-            "point_id": index + 1,
+            "point_id": make_point_id(book_id, chunk.chunk_id),
         }
-        for index, chunk in enumerate(chunks)
+        for chunk in chunks
     ]
-    BM25_CORPUS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(BM25_CORPUS_FILE, "w", encoding="utf-8") as handle:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
         json.dump(records, handle, ensure_ascii=False, indent=2)
-    print(f"💾 BM25 語料: {BM25_CORPUS_FILE} ({len(records)} chunks)")
+    print(f"💾 BM25: {path} ({len(records)} chunks)")
 
 
-def save_index_meta(
-    book_title: str,
-    num_chunks: int,
-    vector_dim: int,
-    *,
-    source_pdf: Path | None = None,
-    source_md: Path | None = None,
-):
-    meta = {
-        "book_title": book_title,
-        "embedding_model": EMBEDDING_MODEL,
-        "chunk_size": DEFAULT_CHUNK_SIZE,
-        "overlap": DEFAULT_OVERLAP,
-        "vector_dim": vector_dim,
-        "num_chunks": num_chunks,
-        "collection_name": COLLECTION_NAME,
-        "built_at": datetime.now().isoformat(),
-    }
-    if source_pdf is not None:
-        meta["source_pdf"] = str(source_pdf.resolve())
-        meta["source_pdf_mtime"] = source_pdf.stat().st_mtime
-    if source_md is not None:
-        meta["source_md"] = str(source_md.resolve())
-    with open(INDEX_META_FILE, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
-    print(f"💾 索引資訊: {INDEX_META_FILE}")
-
-
-def load_index_meta() -> Dict[str, Any]:
-    if not INDEX_META_FILE.exists():
-        raise FileNotFoundError("找不到索引，請先執行 uv run python scripts/build_index.py")
-    with open(INDEX_META_FILE, encoding="utf-8") as f:
-        return json.load(f)
-
-
-def hits_to_dicts(results) -> List[Dict]:
-    return [
-        {
-            "text": point.payload.get("text", ""),
-            "score": point.score,
-            "chapter": point.payload.get("chapter", ""),
-            "heading": point.payload.get("heading", ""),
-            "chunk_id": point.payload.get("chunk_id"),
-        }
-        for point in results
-    ]
-
-
-def search(
-    client: QdrantClient,
-    model: SentenceTransformer,
-    query: str,
-    limit: int = 3,
-) -> List[Dict]:
-    query_vector = encode_query(model, query)
-    response = client.query_points(
-        collection_name=COLLECTION_NAME,
-        query=query_vector,
-        limit=limit,
-        with_payload=True,
-    )
-    return hits_to_dicts(response.points)
-
-
-def print_search_results(query: str, results: List[Dict]):
-    print(f"\n❓ 問題: {query}")
-    for rank, result in enumerate(results, 1):
-        text_preview = result["text"][:80].replace("\n", " ")
-        chapter = result.get("chapter") or "(無)"
-        heading = result.get("heading") or "(無)"
-        print(f"  [{rank}] (相似度: {result['score']:.3f})")
-        print(f"       章節: {chapter} → {heading}")
-        print(f"       內容: {text_preview}...")
-
-
-def build_index(
+def build_index_for_book(
+    book_id: str,
+    pdf_path: Path,
     *,
     force: bool = False,
-    pdf_path: Path | None = None,
-) -> tuple[QdrantClient, SentenceTransformer, List[Chunk]] | tuple[None, None, None]:
-    if pdf_path is not None:
-        state = assess_build_state(pdf_path, force=force)
-        if state.skip_all:
-            print(state.message)
-            return None, None, None
+) -> bool:
+    """Index one book. Returns True if indexing ran."""
+    state = assess_build_state(pdf_path, book_id, force=force)
+    if state.skip_all:
+        print(state.message)
+        return False
+    if state.run_index is False and not state.run_convert:
+        print(state.message)
+        return False
 
-    md_path = get_md_path()
-    book_title = md_path.stem
-    print(f"📖 讀取: {book_title}")
+    entry = ensure_entry_for_pdf(pdf_path, book_id=book_id)
+    md_path = Path(entry.md_path)
+    if not md_path.exists():
+        raise FileNotFoundError(f"找不到 {md_path}，請先轉換 PDF")
 
-    with open(md_path, encoding="utf-8") as f:
-        md_text = f.read()
+    book_title = entry.book_title
+    print(f"📖 [{book_id}] {book_title}")
+
+    with open(md_path, encoding="utf-8") as handle:
+        md_text = handle.read()
 
     print(f"\n⚙️ 生成分塊 (size={DEFAULT_CHUNK_SIZE}, overlap={DEFAULT_OVERLAP})...")
-    chunks = chunk_markdown(
-        md_text,
-        chunk_size=DEFAULT_CHUNK_SIZE,
-        overlap=DEFAULT_OVERLAP,
-    )
+    chunks = chunk_markdown(md_text, chunk_size=DEFAULT_CHUNK_SIZE, overlap=DEFAULT_OVERLAP)
     print(f"✅ 生成 {len(chunks)} 個分塊")
     with_chapter = sum(1 for c in chunks if c.chapter)
-    print(f"   含章節標籤的分塊: {with_chapter}/{len(chunks)}")
+    print(f"   含章節標籤: {with_chapter}/{len(chunks)}")
 
     model = load_embedding_model(EMBEDDING_MODEL)
     vector_dim = model.get_sentence_embedding_dimension()
     embeddings = embed_chunks(model, chunks)
 
-    print(f"\n🔄 初始化 Qdrant（持久化: {QDRANT_PATH}）...")
-    client = init_qdrant_client(recreate=True, vector_dim=vector_dim)
+    client = create_qdrant_client()
+    ensure_collection(client, vector_dim)
     ensure_payload_indexes(client)
-    upload_to_qdrant(client, chunks, embeddings, book_title=book_title)
-    save_bm25_corpus(chunks, book_title)
-    resolved_pdf = pdf_path.resolve() if pdf_path else None
-    if resolved_pdf is None:
-        existing = load_index_meta_optional()
-        if existing and existing.get("source_pdf"):
-            resolved_pdf = Path(existing["source_pdf"])
-
-    save_index_meta(
-        book_title,
-        len(chunks),
-        vector_dim,
-        source_pdf=resolved_pdf,
-        source_md=md_path,
+    delete_vectors_for_book(client, book_id)
+    upload_to_qdrant(
+        client,
+        chunks,
+        embeddings,
+        book_id=book_id,
+        book_title=book_title,
     )
+    save_bm25_corpus(chunks, book_id=book_id, book_title=book_title)
 
-    return client, model, chunks
+    lib = load_library_meta_optional() or {"books": {}}
+    books_meta = dict(lib.get("books") or {})
+    books_meta[book_id] = {
+        "book_title": book_title,
+        "num_chunks": len(chunks),
+        "source_pdf": str(pdf_path.resolve()),
+        "source_pdf_mtime": pdf_path.stat().st_mtime,
+        "source_md": str(md_path.resolve()),
+        "built_at": datetime.now().isoformat(),
+    }
+    save_library_meta(books_meta, vector_dim)
+
+    entry.status = STATUS_INDEXED
+    entry.num_chunks = len(chunks)
+    entry.source_pdf_mtime = pdf_path.stat().st_mtime
+    entry.indexed_at = datetime.now().isoformat()
+    entry.md_path = str(md_path)
+    upsert_registry_entry(entry)
+    return True
 
 
-if __name__ == "__main__":
-    client, model, _ = build_index()
+def archive_book(book_id: str) -> None:
+    entry = get_book(book_id)
+    if not entry:
+        raise KeyError(f"未知 book_id: {book_id}")
 
-    print("\n🔍 快速搜尋測試:")
-    print("=" * 80)
-    test_queries = [
-        "如何不靠运气致富？",
-        "如何找到自己的专长？",
-        "幸福是一种可以学习的技能吗？",
-    ]
-    for query in test_queries:
-        results = search(client, model, query)
-        print_search_results(query, results)
+    client = create_qdrant_client()
+    delete_vectors_for_book(client, book_id)
 
-    print("\n✅ 索引建立完成！")
-    print("   接下來: uv run python scripts/chat.py")
-    print("   評測預覽: uv run python scripts/eval.py --preview")
+    path = bm25_path(book_id)
+    if path.exists():
+        path.unlink()
+        print(f"   已刪除 {path.name}")
+
+    set_book_status(book_id, STATUS_ARCHIVED, num_chunks=0)
+    lib = load_library_meta_optional()
+    if lib and book_id in (lib.get("books") or {}):
+        books_meta = dict(lib["books"])
+        books_meta.pop(book_id, None)
+        save_library_meta(books_meta, lib.get("vector_dim", 512))
+    print(f"✅ [{book_id}] 已封存（僅保留 SQLite 筆記，問答走 Memory）")
+
+
+def list_indexed_book_ids() -> List[str]:
+    reg = load_registry()
+    return [bid for bid, e in reg.items() if e.status == STATUS_INDEXED]
+
+
+# --- Legacy helpers (eval / single-md scripts) ---
+
+
+def load_index_meta() -> Dict[str, Any]:
+    meta = load_library_meta_optional()
+    if not meta:
+        raise FileNotFoundError("找不到索引，請先執行 scripts/build_index.py")
+    return meta
+
+
+def get_md_path() -> Path:
+    md_files = sorted(OUTPUTS_DIR.glob("*.md"))
+    if not md_files:
+        raise FileNotFoundError("找不到 outputs/*.md")
+    return md_files[0]
+
+
+def build_index(*, force: bool = False, pdf_path: Path | None = None):
+    """Backward-compatible: index one PDF."""
+    if pdf_path is None:
+        from core.config import SAMPLE_BOOKS_DIR
+
+        pdfs = sorted(SAMPLE_BOOKS_DIR.glob("*.pdf"))
+        if not pdfs:
+            raise FileNotFoundError("sample_books 內無 PDF")
+        pdf_path = pdfs[0]
+    book_id = slug_from_pdf(pdf_path)
+    build_index_for_book(book_id, pdf_path, force=force)
+    return create_qdrant_client(), load_embedding_model(), None
+
+
+def init_qdrant_client(recreate: bool = False, vector_dim: int = 512) -> QdrantClient:
+    """Legacy entry for eval scripts."""
+    client = create_qdrant_client()
+    if recreate:
+        try:
+            client.delete_collection(COLLECTION_NAME)
+        except Exception:
+            pass
+    ensure_collection(client, vector_dim)
+    return client
+
+
+def is_index_complete(meta: Optional[Dict[str, Any]] = None) -> bool:
+    """Any book indexed (legacy API)."""
+    lib = meta or load_library_meta_optional()
+    if not lib:
+        return False
+    for bid in (lib.get("books") or {}):
+        if is_book_indexed(bid):
+            return True
+    if BM25_CORPUS_FILE.exists() and lib.get("embedding_model") == EMBEDDING_MODEL:
+        return True
+    return False
