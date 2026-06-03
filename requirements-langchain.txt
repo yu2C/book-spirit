@@ -1,8 +1,0 @@
-# 對照用；請改用：uv sync --group langchain
--r requirements.txt
-
-# LangChain + LangGraph（/ask 的 langchain / langgraph backend）
-langchain==0.3.0
-langchain-community>=0.0.10
-langchain-core>=0.3.0
-langgraph>=0.2.40

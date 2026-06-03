@@ -14,6 +14,8 @@ uv run ruff check core ingest memory eval api integrations scripts tests/
 
 ## Docker Compose
 
+映像建置使用 `uv sync --frozen --group langchain`（見 `Dockerfile`），不再維護 `requirements*.txt`。
+
 ```bash
 cp .env.example .env
 QDRANT_URL=http://localhost:6333 uv run python scripts/build_index.py

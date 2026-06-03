@@ -3,7 +3,7 @@
 把 RAG 系統部署為 REST API
 
 運行方法：
-  pip install -r requirements-langchain.txt
+  uv sync --group langchain
   uv run python -m api
 
 Docker Compose：
@@ -165,7 +165,7 @@ def build_backend(name: str):
             from integrations.langchain import LangChainRAG
         except ImportError as exc:
             raise RuntimeError(
-                "LangChain backend 需要: pip install -r requirements-langchain.txt"
+                "LangChain backend 需要: uv sync --group langchain"
             ) from exc
         return LangChainRAG()
     if name == BACKEND_LANGGRAPH:
@@ -173,7 +173,7 @@ def build_backend(name: str):
             from integrations.langgraph import LangGraphRAG
         except ImportError as exc:
             raise RuntimeError(
-                "LangGraph backend 需要: pip install -r requirements-langchain.txt"
+                "LangGraph backend 需要: uv sync --group langchain"
             ) from exc
         return LangGraphRAG()
     raise ValueError(f"Unsupported backend: {name}")

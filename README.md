@@ -86,7 +86,7 @@ uv sync --group langchain
 ```
 
 > 請勿對系統 Python 直接 `pip install`（macOS Homebrew 會阻擋）。  
-> 舊版 `requirements*.txt` 仍保留對照；日常以 `pyproject.toml` + `uv.lock` 為準。
+> 依賴唯一來源：`pyproject.toml` + `uv.lock`。
 
 日常讀書 → **[QUICKSTART_READING.md](QUICKSTART_READING.md)**（`scripts/build_index.py` → `scripts/chat.py`）
 

@@ -6,12 +6,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt requirements-langchain.txt ./
-RUN pip install --no-cache-dir -r requirements-langchain.txt \
-    && pip install --no-cache-dir psycopg2-binary
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --group langchain --no-install-project
 
 COPY . .
 
+ENV PATH="/app/.venv/bin:$PATH"
 ENV RAG_BACKEND=native
 EXPOSE 8000
 
