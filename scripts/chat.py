@@ -62,7 +62,9 @@ def _prompt() -> str:
 from core.pipeline import NativeRAG  # noqa: E402
 from memory.store import ReadingMemory  # noqa: E402
 
-SLASH_COMMANDS = ("/help", "/h", "/save", "/s", "/book", "/books", "/profile")
+SLASH_COMMANDS = ("/help", "/h", "/save", "/s", "/book", "/books", "/profile", "/debug")
+
+_show_retrieval_debug = os.getenv("SHOW_RETRIEVAL_DEBUG", "false").lower() in ("1", "true", "yes")
 
 SLASH_HELP = """
 📌 斜線指令（先問答再 /save）：
@@ -73,6 +75,7 @@ SLASH_HELP = """
   /book              顯示目前範圍
   /save 或 /s        存上一則 AI 回答
   /profile 文字      讀者偏好
+  /debug             切換顯示檢索用查詢（Planner）
   quit 或 q          離開
 """
 
@@ -118,6 +121,9 @@ def _print_answer(result: dict) -> None:
                 print(f"    預覽: {preview}...\n")
     if result.get("memory_notes_used"):
         print(f"💭 已參考 {len(result['memory_notes_used'])} 則過往筆記")
+    queries = result.get("retrieval_queries_used") or []
+    if queries and _show_retrieval_debug:
+        print(f"\n🔍 檢索用查詢: {' | '.join(queries)}")
     print(
         f"\n⏱️  {result['time_elapsed']:.2f}s (LLM: {result.get('llm_time', 0):.2f}s)"
     )
@@ -149,6 +155,7 @@ def _suggest_slash_command(cmd: str) -> str | None:
 
 
 def _slash(line: str, last_result: dict | None, memory: ReadingMemory, book_id: str) -> str:
+    global _show_retrieval_debug
     parts = line.strip().split(maxsplit=1)
     cmd = parts[0].lower()
     if cmd not in SLASH_COMMANDS and not cmd.startswith("/profile"):
@@ -179,6 +186,10 @@ def _slash(line: str, last_result: dict | None, memory: ReadingMemory, book_id: 
             memory.set_profile(rest)
             print("✅ 已更新 profile")
         print(memory.get_profile() or "（尚未設定）")
+    elif cmd == "/debug":
+        _show_retrieval_debug = not _show_retrieval_debug
+        state = "開啟" if _show_retrieval_debug else "關閉"
+        print(f"✅ 檢索查詢顯示: {state}（需 USE_QUERY_PLANNER=1 才有 Planner 輸出）")
     else:
         print(f"❌ 未知指令 {cmd}，/help 查看")
     return book_id

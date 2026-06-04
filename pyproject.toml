@@ -1,7 +1,7 @@
 [project]
 name = "book-spirit"
 version = "0.1.0"
-description = "中文書籍 RAG：PDF → Qdrant → FastAPI → Ollama"
+description = "Personal RAG learning toy: PDF ingest, Qdrant retrieval, Ollama Q&A, SQLite reading notes"
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "markitdown[pdf]>=0.1.0",

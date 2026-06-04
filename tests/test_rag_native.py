@@ -73,7 +73,8 @@ def test_retrieve_passes_query_filter(rag_module):
     with patch.object(rag_module, "build_qdrant_filter", return_value="MOCK_FILTER") as mock_build:
         rag.retrieve("專長", top_k=3, filters=filters)
 
-    mock_build.assert_called_once_with(filters)
+        assert mock_build.call_count >= 1
+        assert all(call.args[0] == filters for call in mock_build.call_args_list)
     _, kwargs = rag.qdrant_client.query_points.call_args
     assert kwargs["query_filter"] == "MOCK_FILTER"
     assert kwargs["limit"] == 30

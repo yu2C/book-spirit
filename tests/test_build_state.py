@@ -83,13 +83,7 @@ def test_assess_build_state_skip_when_index_complete():
                     bm25_path(book_id).parent.mkdir(parents=True, exist_ok=True)
                     bm25_path(book_id).write_text("[]", encoding="utf-8")
 
-                    mock_client = MagicMock()
-                    mock_client.collection_exists.return_value = True
-                    mock_info = MagicMock()
-                    mock_info.points_count = 10
-                    mock_client.get_collection.return_value = mock_info
-
-                    with patch("ingest.indexer.create_qdrant_client", return_value=mock_client):
+                    with patch("ingest.indexer.point_count_for_book", return_value=10):
                         with patch("ingest.indexer.EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5"):
                             state = assess_build_state(pdf, book_id)
                             assert state.skip_all is True

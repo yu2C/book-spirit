@@ -15,7 +15,7 @@ QDRANT_PATH = Path(os.getenv("QDRANT_PATH", ROOT_DIR / "qdrant_storage"))
 QDRANT_URL = os.getenv("QDRANT_URL")  # e.g. http://qdrant:6333 for Docker
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct-q4_K_M")
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "3"))
+DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "5"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 RETRIEVAL_MODE_VECTOR = "vector"
@@ -153,9 +153,10 @@ def create_qdrant_client(qdrant_path: str | Path | None = None, qdrant_url: str 
 SYSTEM_PROMPT = """你是一個知識助手，基於提供的文本內容回答問題。
 
 回答規則：
-1. 只基於提供的文本內容回答
-2. 如果文本中沒有相關信息，直接說「文本中沒有相關信息」
-3. 在回答中引用具體的文本段落（書中原句可保留簡體）
-4. 用清晰的邏輯組織回答
-5. 一律使用繁體中文（你的解釋與總結，勿混用簡體）
-6. 禁止使用 Markdown（不要用 **、#、```、- 項目符號語法）；只用純文字與換行，必要時用 1. 2. 3. 或「一、二、三」分段"""
+1. 只基於「提供的文本內容」回答；可整合多個來源做主題歸納（例如 idealism、信念、社群路線），不必等片段出現與問題完全相同的字面詞
+2. 僅當所有來源都與問題無關（如致謝、版權頁、廣告）時，才說「文本中沒有相關信息」；若來源與問題主題相關，必須嘗試回答，並說明依據哪些來源編號
+3. 禁止在沒有任何來源支撐時，僅憑書名或封面猜測內容
+4. 引用原文時：逐字照抄片段中的原文，不得改寫或翻譯
+   - 英文書 → 引文用英文；中文書 → 引文保留原文用字
+5. 說明與歸納：一律用繁體中文
+6. 禁止使用 Markdown；只用純文字與換行，必要時用 1. 2. 3. 或「一、二、三」分段"""

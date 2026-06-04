@@ -26,13 +26,33 @@ class Chunk:
     chapter: str = ""
     chunk_id: int = 0
 
+_BACK_MATTER_MARKERS = (
+    "\nAcknowledgments\n",
+    "\nAcknowledgements\n",
+    "\nAbout the Author\n",
+    "\nAbout the author\n",
+    "\nNotes\n",
+    "\nBibliography\n",
+    "\nIndex\n",
+    "\nDiscover More\n",
+)
+
+
 def normalize_md_text(md_text: str) -> str:
-    """清理 PDF 轉換殘留，並移除末尾重複目錄。"""
+    """清理 PDF 轉換殘留；去掉重複目錄與英文書常見後記。"""
     md_text = md_text.replace('\f', '')
     marker = '\nTable of Contents\n'
     idx = md_text.find(marker)
     if idx > len(md_text) * 0.5:
         md_text = md_text[:idx]
+    # 後記、致謝多在全書後段，避免被「大綱類」問題檢索到
+    cut_at = len(md_text)
+    for marker in _BACK_MATTER_MARKERS:
+        pos = md_text.find(marker)
+        if pos > len(md_text) * 0.55:
+            cut_at = min(cut_at, pos)
+    if cut_at < len(md_text):
+        md_text = md_text[:cut_at]
     return md_text
 
 def parse_line_structure(line: str, allow_short_headings: bool = True) -> Tuple[str | None, str | None]:

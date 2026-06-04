@@ -24,6 +24,7 @@ from qdrant_client.models import (
 )
 from sentence_transformers import SentenceTransformer
 
+from core.collections import LEGACY_COLLECTION, collection_name_for_book, point_count_for_book
 from core.config import (
     BM25_CORPUS_FILE,
     COLLECTION_NAME,
@@ -131,16 +132,9 @@ def is_book_indexed(book_id: str) -> bool:
         return False
     try:
         client = create_qdrant_client()
-        return client.collection_exists(COLLECTION_NAME) and _collection_point_count(client) > 0
+        return point_count_for_book(client, book_id) > 0
     except Exception:
         return False
-
-
-def _collection_point_count(client: QdrantClient) -> int:
-    if not client.collection_exists(COLLECTION_NAME):
-        return 0
-    info = client.get_collection(COLLECTION_NAME)
-    return int(getattr(info, "points_count", 0) or 0)
 
 
 def sources_unchanged(pdf_path: Path, entry: BookEntry, md_path: Path) -> bool:
@@ -249,21 +243,22 @@ def embed_chunks(
     return embeddings.tolist()
 
 
-def ensure_collection(client: QdrantClient, vector_dim: int) -> None:
+def ensure_collection(client: QdrantClient, book_id: str, vector_dim: int) -> str:
     if QDRANT_URL:
         print(f"🔄 連接 Qdrant: {QDRANT_URL}")
     else:
         QDRANT_PATH.mkdir(parents=True, exist_ok=True)
-        print(f"🔄 Qdrant（持久化: {QDRANT_PATH}）...")
-    if not client.collection_exists(COLLECTION_NAME):
+    cname = collection_name_for_book(book_id)
+    if not client.collection_exists(cname):
         client.create_collection(
-            collection_name=COLLECTION_NAME,
+            collection_name=cname,
             vectors_config=VectorParams(size=vector_dim, distance=Distance.COSINE),
         )
-        print(f"✅ 建立集合: {COLLECTION_NAME}（維度 {vector_dim}）")
+        print(f"✅ 建立集合: {cname}（維度 {vector_dim}）")
+    return cname
 
 
-def ensure_payload_indexes(client: QdrantClient):
+def ensure_payload_indexes(client: QdrantClient, collection_name: str):
     for field, schema in (
         ("chapter", PayloadSchemaType.TEXT),
         ("heading", PayloadSchemaType.TEXT),
@@ -272,7 +267,7 @@ def ensure_payload_indexes(client: QdrantClient):
     ):
         try:
             client.create_payload_index(
-                collection_name=COLLECTION_NAME,
+                collection_name=collection_name,
                 field_name=field,
                 field_schema=schema,
             )
@@ -282,18 +277,24 @@ def ensure_payload_indexes(client: QdrantClient):
 
 
 def delete_vectors_for_book(client: QdrantClient, book_id: str) -> None:
-    if not client.collection_exists(COLLECTION_NAME):
-        return
+    cname = collection_name_for_book(book_id)
     try:
-        client.delete(
-            collection_name=COLLECTION_NAME,
-            points_selector=Filter(
-                must=[FieldCondition(key="book_id", match=MatchValue(value=book_id))]
-            ),
-        )
-        print(f"   已移除 Qdrant 中 book_id={book_id} 的向量")
+        if client.collection_exists(cname):
+            client.delete_collection(cname)
+            print(f"   已刪除集合: {cname}")
     except Exception as exc:
-        print(f"   移除舊向量略過: {exc}")
+        print(f"   刪除集合略過: {exc}")
+    if client.collection_exists(LEGACY_COLLECTION):
+        try:
+            client.delete(
+                collection_name=LEGACY_COLLECTION,
+                points_selector=Filter(
+                    must=[FieldCondition(key="book_id", match=MatchValue(value=book_id))]
+                ),
+            )
+            print(f"   已自 {LEGACY_COLLECTION} 移除 book_id={book_id}")
+        except Exception:
+            pass
 
 
 def upload_to_qdrant(
@@ -301,10 +302,11 @@ def upload_to_qdrant(
     chunks: List[Chunk],
     embeddings: List[List[float]],
     *,
+    collection_name: str,
     book_id: str,
     book_title: str,
 ):
-    print("\n🔄 上傳到 Qdrant（upsert）...")
+    print(f"\n🔄 上傳到 Qdrant（{collection_name}）...")
     points = []
     for chunk, embedding in zip(chunks, embeddings):
         pid = make_point_id(book_id, chunk.chunk_id)
@@ -319,7 +321,7 @@ def upload_to_qdrant(
             "indexed_at": datetime.now().isoformat(),
         }
         points.append(PointStruct(id=pid, vector=embedding, payload=payload))
-    client.upsert(collection_name=COLLECTION_NAME, points=points)
+    client.upsert(collection_name=collection_name, points=points)
     print(f"✅ 上傳完成: {len(points)} 個向量（{book_id}）")
 
 
@@ -381,13 +383,14 @@ def build_index_for_book(
     embeddings = embed_chunks(model, chunks)
 
     client = create_qdrant_client()
-    ensure_collection(client, vector_dim)
-    ensure_payload_indexes(client)
     delete_vectors_for_book(client, book_id)
+    cname = ensure_collection(client, book_id, vector_dim)
+    ensure_payload_indexes(client, cname)
     upload_to_qdrant(
         client,
         chunks,
         embeddings,
+        collection_name=cname,
         book_id=book_id,
         book_title=book_title,
     )
@@ -398,6 +401,7 @@ def build_index_for_book(
     books_meta[book_id] = {
         "book_title": book_title,
         "num_chunks": len(chunks),
+        "qdrant_collection": cname,
         "source_pdf": str(pdf_path.resolve()),
         "source_pdf_mtime": pdf_path.stat().st_mtime,
         "source_md": str(md_path.resolve()),
@@ -472,15 +476,18 @@ def build_index(*, force: bool = False, pdf_path: Path | None = None):
     return create_qdrant_client(), load_embedding_model(), None
 
 
-def init_qdrant_client(recreate: bool = False, vector_dim: int = 512) -> QdrantClient:
+def init_qdrant_client(
+    recreate: bool = False,
+    vector_dim: int = 512,
+    book_id: str | None = None,
+) -> QdrantClient:
     """Legacy entry for eval scripts."""
     client = create_qdrant_client()
+    bids = list_indexed_book_ids()
+    bid = book_id or (bids[0] if bids else "default")
     if recreate:
-        try:
-            client.delete_collection(COLLECTION_NAME)
-        except Exception:
-            pass
-    ensure_collection(client, vector_dim)
+        delete_vectors_for_book(client, bid)
+    ensure_collection(client, bid, vector_dim)
     return client
 
 

@@ -17,7 +17,9 @@ from core.config import (
 
 logger = logging.getLogger(__name__)
 
+_BM25_CACHE_MAX = 2
 _bm25_cache: Dict[Tuple[str, ...], "BM25Index"] = {}
+_bm25_cache_order: List[Tuple[str, ...]] = []
 
 
 def tokenize_zh(text: str) -> List[str]:
@@ -125,9 +127,18 @@ def resolve_bm25_paths(filters: SearchFilters | None) -> List[Path]:
 def get_bm25_index(filters: SearchFilters | None = None) -> BM25Index:
     paths = resolve_bm25_paths(filters)
     key = tuple(str(p) for p in paths)
-    if key not in _bm25_cache:
-        _bm25_cache[key] = BM25Index.load_paths(paths)
-    return _bm25_cache[key]
+    if key in _bm25_cache:
+        if key in _bm25_cache_order:
+            _bm25_cache_order.remove(key)
+        _bm25_cache_order.append(key)
+        return _bm25_cache[key]
+    index = BM25Index.load_paths(paths)
+    _bm25_cache[key] = index
+    _bm25_cache_order.append(key)
+    while len(_bm25_cache_order) > _BM25_CACHE_MAX:
+        old = _bm25_cache_order.pop(0)
+        _bm25_cache.pop(old, None)
+    return index
 
 
 def bm25_search(
@@ -145,6 +156,7 @@ def hybrid_retrieve(
     candidate_limit: int,
     filters: SearchFilters | None = None,
     candidates: int = RETRIEVE_CANDIDATES,
+    scope_book_id: str | None = None,
 ) -> List[Dict[str, Any]]:
     try:
         bm25_docs = bm25_search(query, top_k=candidates, filters=filters)
@@ -154,8 +166,11 @@ def hybrid_retrieve(
             query,
             limit=candidate_limit,
             filters=filters,
+            scope_book_id=scope_book_id,
         )[:candidate_limit]
 
-    vector_docs = native_rag.vector_search(query, limit=candidates, filters=filters)
+    vector_docs = native_rag.vector_search(
+        query, limit=candidates, filters=filters, scope_book_id=scope_book_id
+    )
     merged = rrf_merge([vector_docs, bm25_docs], top_k=candidate_limit)
     return apply_payload_filters(merged, filters)[:candidate_limit]

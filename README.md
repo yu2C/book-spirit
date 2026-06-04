@@ -2,32 +2,15 @@
 
 [![CI](https://github.com/yu2C/book-spirit/actions/workflows/ci.yml/badge.svg)](https://github.com/yu2C/book-spirit/actions/workflows/ci.yml)
 
-**Swappable local RAG + personal reading memory** — ingest a book, ask with citations, save what you understood; retrieval stack can be rebuilt without losing your notes.
+**Personal RAG learning toy** — ingest PDFs, ask with citations, save notes to SQLite; rebuild vectors without losing your notes.
 
-| 你是… | 從這裡讀 |
-|--------|----------|
-| **面試官 / 第一次看 repo** | 下方「求職摘要」→ [ARCHITECTURE.md](ARCHITECTURE.md) |
-| **自己要讀書、記心得** | [QUICKSTART_READING.md](QUICKSTART_READING.md) |
-| **部署 / CI** | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
+| 用途 | 文件 |
+|------|------|
+| 讀書、問答、`/save` | [QUICKSTART_READING.md](QUICKSTART_READING.md) |
+| 架構與取捨 | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| Docker / CI | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 
----
-
-## 求職摘要（B）
-
-**EN:** Personal reading memory (SQLite) on a swappable RAG stack: MarkItDown → chapter-aware chunking → BGE + Qdrant → Ollama, with retrieval-only eval and optional hybrid/rerank experiments. LangChain/LangGraph are thin wrappers over native—not the core.
-
-**中文：** 在可替換的 RAG 底座上，用 **SQLite 沉澱讀者自己的理解**；檢索與生成分離、固定題集評測檢索層。核心為自研 `native` pipeline；LangChain / LangGraph 僅作對照與履歷關鍵字。
-
-| 關鍵字 | 對應 |
-|--------|------|
-| RAG / Vector DB | ingest → BGE → Qdrant → `/ask` |
-| Personal memory | `memory/store.py` — 筆記與 profile，與向量索引分離 |
-| Eval | `scripts/eval.py` — precision@k，不混 LLM 錯誤 |
-| Hybrid / Rerank | 進階實驗，見 ARCHITECTURE |
-| LangChain / LangGraph | 可選，委派 native |
-| FastAPI / CI | API + pytest；部署見 docs/DEPLOYMENT |
-
-**面試開場（30 秒）：** 見 [ARCHITECTURE.md#面試怎麼講](ARCHITECTURE.md#面試怎麼講b30-秒--追問)。
+流程：MarkItDown → 章節分塊 → BGE + Qdrant（可選 BM25 hybrid）→ Ollama 生成。核心為 `core.pipeline`；LangChain / LangGraph 僅可選對照。
 
 ---
 
@@ -252,7 +235,7 @@ curl -X POST "http://127.0.0.1:8000/search" \
 | BGE-small-zh | 中文輕量、M4/WSL 可跑；查詢需 `query:` 前綴 |
 | Qdrant 本地 | Vector DB 展示、metadata 過濾、延遲低 |
 | Ollama | 本地 LLM、隱私優先 |
-| LangChain 薄層 | 履歷關鍵字 + 與 native 結果可對照 |
+| LangChain 薄層 | 可選，與 native 結果對照 |
 | LangGraph | 多步 workflow 敘事（retrieve → generate） |
 
 ---
@@ -285,11 +268,8 @@ A: `./qdrant_storage/`（持久化，刪除後需重跑步驟 3）。
 
 ## 下一步
 
-| 優先 | 內容 |
-|------|------|
-| 個人 | 問答 + `/save` 累積筆記；eval 題庫自訂 |
-| 內容（C） | 從筆記生成讀書片段草稿（規劃中） |
-| 面試（B） | 依 ARCHITECTURE 練講；必要時補 eval 數字 |
-| 可選 | 上雲 Phase 4、目錄重構 |
+- 問答 + `/save` 累積筆記  
+- `scripts/eval.py` 自訂檢索題庫  
+- 可選：hybrid / rerank / query planner（`.env`）  
 
-見 [Todo.md](Todo.md)。
+個人實作清單見本機 `Todo.md`（不納入版本庫）。

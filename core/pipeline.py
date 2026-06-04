@@ -9,8 +9,8 @@ import requests
 from sentence_transformers import SentenceTransformer
 
 from core.books import BOOK_SCOPE_ALL, resolve_ask_context
+from core.collections import LEGACY_COLLECTION, vector_search_targets
 from core.config import (
-    COLLECTION_NAME,
     DEFAULT_TOP_K,
     EMBEDDING_MODEL,
     OLLAMA_MODEL,
@@ -26,6 +26,13 @@ from core.config import (
     apply_payload_filters,
     build_qdrant_filter,
     create_qdrant_client,
+)
+from core.query_planner import QueryPlan, build_query_plan
+from core.retrieval import (
+    expand_retrieval_queries,
+    filter_boilerplate_docs,
+    merge_docs_by_best_score,
+    retrieval_top_k,
 )
 
 
@@ -93,19 +100,68 @@ class NativeRAG:
         query: str,
         limit: int = DEFAULT_TOP_K,
         filters: Optional[SearchFilters] = None,
+        *,
+        scope_book_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         query_vector = self.embedding_model.encode(
             [f"query: {query}"],
             normalize_embeddings=True,
         )[0].tolist()
-        response = self.qdrant_client.query_points(
-            collection_name=COLLECTION_NAME,
-            query=query_vector,
-            query_filter=build_qdrant_filter(filters),
-            limit=limit,
-            with_payload=True,
-        )
-        return apply_payload_filters(hits_to_docs(response.points), filters)
+
+        scope_key = scope_book_id
+        if filters and filters.book_id:
+            scope_key = filters.book_id
+        if scope_key == BOOK_SCOPE_ALL:
+            scope_key = "all"
+        targets = vector_search_targets(scope_key)
+
+        merged: List[Dict[str, Any]] = []
+        per_collection = max(limit, 10) if len(targets) > 1 else limit
+
+        for cname, _bid in targets:
+            if not self.qdrant_client.collection_exists(cname):
+                if cname.startswith("book_") and self.qdrant_client.collection_exists(LEGACY_COLLECTION):
+                    cname = LEGACY_COLLECTION
+                else:
+                    continue
+            qfilter = build_qdrant_filter(filters)
+            response = self.qdrant_client.query_points(
+                collection_name=cname,
+                query=query_vector,
+                query_filter=qfilter,
+                limit=per_collection,
+                with_payload=True,
+            )
+            merged.extend(hits_to_docs(response.points))
+
+        merged.sort(key=lambda d: d.get("score", 0), reverse=True)
+        return apply_payload_filters(merged, filters)[:limit]
+
+    def _retrieve_once(
+        self,
+        query: str,
+        *,
+        candidate_limit: int,
+        filters: Optional[SearchFilters],
+        mode: str,
+        scope_book_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        if mode == RETRIEVAL_MODE_HYBRID:
+            from core.hybrid import hybrid_retrieve
+
+            return hybrid_retrieve(
+                self,
+                query,
+                candidate_limit=candidate_limit,
+                filters=filters,
+                scope_book_id=scope_book_id,
+            )
+        fetch_k = candidate_limit
+        if filters and not filters.is_empty():
+            fetch_k = max(candidate_limit, 30)
+        return self.vector_search(
+            query, limit=fetch_k, filters=filters, scope_book_id=scope_book_id
+        )[:candidate_limit]
 
     def retrieve(
         self,
@@ -114,31 +170,37 @@ class NativeRAG:
         filters: Optional[SearchFilters] = None,
         mode: Optional[str] = None,
         use_rerank: Optional[bool] = None,
+        *,
+        planned_queries: Optional[List[str]] = None,
+        scope_book_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         retrieval_mode = mode or RETRIEVAL_MODE
         rerank_enabled = USE_RERANK if use_rerank is None else use_rerank
-        candidate_limit = RERANK_CANDIDATES if rerank_enabled else top_k
+        effective_top_k = retrieval_top_k(query, top_k)
+        candidate_limit = RERANK_CANDIDATES if rerank_enabled else max(effective_top_k * 3, 15)
 
-        if retrieval_mode == RETRIEVAL_MODE_HYBRID:
-            from core.hybrid import hybrid_retrieve
-
-            docs = hybrid_retrieve(
-                self,
-                query,
-                candidate_limit=candidate_limit,
-                filters=filters,
+        queries = planned_queries or expand_retrieval_queries(query)
+        per_query: List[List[Dict[str, Any]]] = []
+        for q in queries:
+            per_query.append(
+                self._retrieve_once(
+                    q,
+                    candidate_limit=candidate_limit,
+                    filters=filters,
+                    mode=retrieval_mode,
+                    scope_book_id=scope_book_id,
+                )
             )
-        else:
-            fetch_k = candidate_limit
-            if filters and not filters.is_empty():
-                fetch_k = max(candidate_limit, top_k * 10, 30)
-            docs = self.vector_search(query, limit=fetch_k, filters=filters)[:candidate_limit]
+        docs = merge_docs_by_best_score(per_query)
+        docs = filter_boilerplate_docs(docs)
 
         if rerank_enabled and docs:
             from core.rerank import rerank_documents
 
-            return rerank_documents(query, docs, top_k=top_k)
-        return docs[:top_k]
+            docs = rerank_documents(query, docs, top_k=effective_top_k)
+        else:
+            docs = docs[:effective_top_k]
+        return docs
 
     def build_prompt(
         self,
@@ -147,6 +209,7 @@ class NativeRAG:
         *,
         memory_block: str = "",
         user_profile: str = "",
+        planner_notes: str = "",
     ) -> str:
         context_text = ""
         for i, doc in enumerate(context, 1):
@@ -156,11 +219,14 @@ class NativeRAG:
         profile_block = ""
         if user_profile.strip():
             profile_block = f"\n【讀者偏好與背景（簡述）】\n{user_profile.strip()}\n"
+        planner_block = ""
+        if planner_notes.strip():
+            planner_block = f"\n【檢索規劃提示】\n{planner_notes.strip()}\n"
 
         memory_section = f"\n{memory_block}\n" if memory_block else ""
 
         return f"""{SYSTEM_PROMPT}
-{profile_block}{memory_section}
+{profile_block}{planner_block}{memory_section}
 提供的文本內容：
 {context_text}
 
@@ -209,10 +275,11 @@ class NativeRAG:
     ) -> Dict[str, Any]:
         start_time = time.time()
         memory_notes_used: List[Dict[str, Any]] = []
+        retrieval_queries_used: List[str] = []
 
         memory_block = ""
         user_profile = ""
-
+        planner_notes = ""
 
         ctx = resolve_ask_context(book_id)
         if filters is not None and not filters.is_empty():
@@ -233,25 +300,49 @@ class NativeRAG:
             except Exception:
                 pass
 
+        plan: Optional[QueryPlan] = None
+        if ctx.rag_enabled:
+            plan = build_query_plan(question, book_id)
+        effective_k = plan.top_k if plan and plan.top_k else retrieval_top_k(question, top_k)
+        if plan:
+            retrieval_queries_used = plan.effective_queries(question)
+            planner_notes = plan.notes_for_generator
+
         if not ctx.rag_enabled:
             retrieved = []
         else:
             retrieved = self.retrieve(
                 question,
-                top_k=top_k,
+                top_k=effective_k,
                 filters=search_filters,
                 mode=mode,
                 use_rerank=use_rerank,
+                planned_queries=retrieval_queries_used or None,
+                scope_book_id=book_id,
             )
+
         if not retrieved:
             hint = ctx.hint or "❌ 未找到相關內容"
             if ctx.rag_enabled and not ctx.hint:
-                hint = "❌ 未找到相關內容（可試 /book all 或確認已 build_index --book）"
+                from core.retrieval import is_overview_question
+
+                if is_overview_question(question):
+                    hint = (
+                        "❌ 檢索不到足以概括全書的段落（常見於剛開始讀）。\n"
+                        "   建議改問：具體章節、人物、事件（英文書請用 idealism、DAO 等英文關鍵字）。\n"
+                        "   若剛更新分塊，請：build_index.py --book <id> --force"
+                    )
+                else:
+                    hint = (
+                        "❌ 檢索不到可用段落（可能落在版權/致謝頁或被過濾）。\n"
+                        "   請改問更具體的人名、事件，或開 USE_QUERY_PLANNER=true 後 /debug 看檢索句"
+                    )
             return {
                 "question": question,
                 "answer": hint,
                 "sources": [],
                 "memory_notes_used": memory_notes_used,
+                "retrieval_queries_used": retrieval_queries_used,
                 "time_elapsed": time.time() - start_time,
                 "llm_time": 0.0,
                 "backend": "native",
@@ -263,6 +354,7 @@ class NativeRAG:
             retrieved,
             memory_block=memory_block,
             user_profile=user_profile,
+            planner_notes=planner_notes,
         )
         answer = self.generate_with_ollama(prompt, temperature=temperature)
         llm_time = time.time() - generate_start
@@ -272,6 +364,7 @@ class NativeRAG:
             "answer": answer,
             "sources": [doc_to_source(doc) for doc in retrieved],
             "memory_notes_used": memory_notes_used,
+            "retrieval_queries_used": retrieval_queries_used,
             "time_elapsed": time.time() - start_time,
             "llm_time": llm_time,
             "backend": "native",
