@@ -1,1 +1,1 @@
-"""Ingest: PDF → Markdown → chunk → Qdrant index."""
+"""Ingest: book file → Markdown → chunk → Qdrant index."""

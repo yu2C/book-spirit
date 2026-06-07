@@ -1,6 +1,7 @@
 # 個人使用 — 理解・問答・記憶
 
-> 主線：**建索引 → 問答 → `/save` 記憶**。架構說明見 [ARCHITECTURE.md](ARCHITECTURE.md)。
+> 安裝與 `naval-almanac` 範例 → [README.md](README.md)  
+> 學習筆記（RRF、Qdrant、LC）→ [docs/LEARNING.md](docs/LEARNING.md)
 
 ---
 
@@ -12,8 +13,9 @@ uv sync
 ollama pull qwen2.5:7b-instruct-q4_K_M
 ollama serve   # 另開終端
 
-# PDF 放入 sample_books/
-uv run python scripts/build_index.py --all    # 索引所有 PDF（增量，不覆蓋其他書）
+# repo 已含 sample_books/naval-almanac.pdf
+uv run python scripts/build_index.py --book naval-almanac
+# 多本書：--all（增量）
 # 單本：--book <book_id>   書目：--list   封存(僅筆記)：--archive <book_id>
 # 改過 PDF 後：--book <id> --force
 ```
@@ -71,3 +73,5 @@ uv run python scripts/build_index.py --book <book_id> --force
 uv run python -m api
 # http://127.0.0.1:8000/docs
 ```
+
+`curl` 範例（納瓦尔題目、vector / hybrid / ask）見 [README.md §6](README.md#6-怎麼測-api)。

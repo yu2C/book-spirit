@@ -38,12 +38,12 @@ from ingest.books_registry import (
     STATUS_ARCHIVED,
     STATUS_INDEXED,
     BookEntry,
-    ensure_entry_for_pdf,
+    ensure_entry_for_source,
     get_book,
     load_registry,
-    md_path_for_pdf,
+    md_path_for_source,
     set_book_status,
-    slug_from_pdf,
+    slug_from_source,
     upsert_registry_entry,
 )
 from ingest.chunker import (
@@ -84,7 +84,7 @@ def load_library_meta_optional() -> Optional[Dict[str, Any]]:
         return raw
     # Legacy single-book meta → v2 shape in memory
     book_title = raw.get("book_title", "legacy")
-    bid = slug_from_pdf(Path(raw.get("source_pdf", book_title + ".pdf")))
+    bid = slug_from_source(Path(raw.get("source_path") or raw.get("source_pdf", book_title + ".pdf")))
     return {
         "version": 2,
         "embedding_model": raw.get("embedding_model"),
@@ -137,24 +137,24 @@ def is_book_indexed(book_id: str) -> bool:
         return False
 
 
-def sources_unchanged(pdf_path: Path, entry: BookEntry, md_path: Path) -> bool:
-    pdf_mtime = pdf_path.stat().st_mtime
+def sources_unchanged(source_path: Path, entry: BookEntry, md_path: Path) -> bool:
+    src_mtime = source_path.stat().st_mtime
     if entry.source_pdf_mtime is not None:
-        return pdf_mtime <= float(entry.source_pdf_mtime) + 1e-3
+        return src_mtime <= float(entry.source_pdf_mtime) + 1e-3
     if md_path.exists():
-        return pdf_mtime <= md_path.stat().st_mtime + 1e-3
+        return src_mtime <= md_path.stat().st_mtime + 1e-3
     return False
 
 
 def assess_build_state(
-    pdf_path: Path,
+    source_path: Path,
     book_id: str,
     *,
     force: bool = False,
 ) -> BuildState:
-    pdf_path = pdf_path.resolve()
-    md_path = md_path_for_pdf(pdf_path)
-    entry = ensure_entry_for_pdf(pdf_path, book_id=book_id)
+    source_path = source_path.resolve()
+    md_path = md_path_for_source(source_path)
+    entry = ensure_entry_for_source(source_path, book_id=book_id)
 
     if force:
         return BuildState(
@@ -178,7 +178,7 @@ def assess_build_state(
         )
 
     index_ok = is_book_indexed(book_id)
-    unchanged = sources_unchanged(pdf_path, entry, md_path)
+    unchanged = sources_unchanged(source_path, entry, md_path)
 
     if index_ok and unchanged:
         return BuildState(
@@ -186,7 +186,7 @@ def assess_build_state(
             run_convert=False,
             run_index=False,
             message=(
-                f"✅ [{book_id}] 索引已存在且 PDF 未變更，跳過。\n"
+                f"✅ [{book_id}] 索引已存在且來源檔未變更，跳過。\n"
                 f"   書名: {entry.book_title}\n"
                 f"   分塊: {entry.num_chunks}\n"
                 f"   強制重建: uv run python scripts/build_index.py --book {book_id} --force"
@@ -194,12 +194,12 @@ def assess_build_state(
             book_id=book_id,
         )
 
-    md_fresh = md_path.exists() and md_path.stat().st_mtime >= pdf_path.stat().st_mtime - 1e-3
+    md_fresh = md_path.exists() and md_path.stat().st_mtime >= source_path.stat().st_mtime - 1e-3
     run_convert = not md_fresh
     run_index = not index_ok or not unchanged
     parts = []
     if run_convert:
-        parts.append("PDF→MD")
+        parts.append("轉 MD")
     if run_index:
         parts.append("建索引")
     message = f"[{book_id}] " + ("將執行：" + "、".join(parts) if parts else "無需變更")
@@ -348,12 +348,12 @@ def save_bm25_corpus(chunks: List[Chunk], *, book_id: str, book_title: str):
 
 def build_index_for_book(
     book_id: str,
-    pdf_path: Path,
+    source_path: Path,
     *,
     force: bool = False,
 ) -> bool:
     """Index one book. Returns True if indexing ran."""
-    state = assess_build_state(pdf_path, book_id, force=force)
+    state = assess_build_state(source_path, book_id, force=force)
     if state.skip_all:
         print(state.message)
         return False
@@ -361,10 +361,10 @@ def build_index_for_book(
         print(state.message)
         return False
 
-    entry = ensure_entry_for_pdf(pdf_path, book_id=book_id)
+    entry = ensure_entry_for_source(source_path, book_id=book_id)
     md_path = Path(entry.md_path)
     if not md_path.exists():
-        raise FileNotFoundError(f"找不到 {md_path}，請先轉換 PDF")
+        raise FileNotFoundError(f"找不到 {md_path}，請先執行轉檔")
 
     book_title = entry.book_title
     print(f"📖 [{book_id}] {book_title}")
@@ -402,8 +402,9 @@ def build_index_for_book(
         "book_title": book_title,
         "num_chunks": len(chunks),
         "qdrant_collection": cname,
-        "source_pdf": str(pdf_path.resolve()),
-        "source_pdf_mtime": pdf_path.stat().st_mtime,
+        "source_pdf": str(source_path.resolve()),
+        "source_path": str(source_path.resolve()),
+        "source_pdf_mtime": source_path.stat().st_mtime,
         "source_md": str(md_path.resolve()),
         "built_at": datetime.now().isoformat(),
     }
@@ -411,7 +412,7 @@ def build_index_for_book(
 
     entry.status = STATUS_INDEXED
     entry.num_chunks = len(chunks)
-    entry.source_pdf_mtime = pdf_path.stat().st_mtime
+    entry.source_pdf_mtime = source_path.stat().st_mtime
     entry.indexed_at = datetime.now().isoformat()
     entry.md_path = str(md_path)
     upsert_registry_entry(entry)
@@ -463,16 +464,17 @@ def get_md_path() -> Path:
 
 
 def build_index(*, force: bool = False, pdf_path: Path | None = None):
-    """Backward-compatible: index one PDF."""
-    if pdf_path is None:
-        from core.config import SAMPLE_BOOKS_DIR
+    """Backward-compatible: index one book (pdf_path = any source file)."""
+    from ingest.books_registry import list_sample_books
 
-        pdfs = sorted(SAMPLE_BOOKS_DIR.glob("*.pdf"))
-        if not pdfs:
-            raise FileNotFoundError("sample_books 內無 PDF")
-        pdf_path = pdfs[0]
-    book_id = slug_from_pdf(pdf_path)
-    build_index_for_book(book_id, pdf_path, force=force)
+    source_path = pdf_path
+    if source_path is None:
+        books = list_sample_books()
+        if not books:
+            raise FileNotFoundError("sample_books 內無支援格式的書籍")
+        _, source_path = books[0]
+    book_id = slug_from_source(source_path)
+    build_index_for_book(book_id, source_path, force=force)
     return create_qdrant_client(), load_embedding_model(), None
 
 

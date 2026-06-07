@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Personal RAG learning toy: PDF ingest, Qdrant retrieval, Ollama Q&A, SQLite reading notes"
 requires-python = ">=3.10,<3.13"
 dependencies = [
-    "markitdown[pdf]>=0.1.0",
+    "markitdown[pdf,docx,pptx,xlsx]>=0.1.0",
     "sentence-transformers==3.0.1",
     "torch>=2.0.0",
     "qdrant-client==1.13.0",

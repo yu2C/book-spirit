@@ -34,7 +34,9 @@ Todo.md
 # Big files
 qdrant_storage/
 outputs/
-sample_books/*.pdf
+sample_books/*
+!sample_books/README.md
+!sample_books/naval-almanac.pdf
 
 # IDE
 .vscode/

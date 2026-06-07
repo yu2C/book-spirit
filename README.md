@@ -1,275 +1,312 @@
-# 📚 Book Spirit
+# Book Spirit
 
 [![CI](https://github.com/yu2C/book-spirit/actions/workflows/ci.yml/badge.svg)](https://github.com/yu2C/book-spirit/actions/workflows/ci.yml)
 
-**Personal RAG learning toy** — ingest PDFs, ask with citations, save notes to SQLite; rebuild vectors without losing your notes.
+個人用的 **RAG 學習 toy**：把書變成可搜尋的段落 → 問答（附引用）→ 把理解存進 SQLite。  
+不是產品；重點是搞懂 **ingest → 檢索 → 生成** 各層在做什麼。
 
-| 用途 | 文件 |
+| 文件 | 內容 |
 |------|------|
-| 讀書、問答、`/save` | [QUICKSTART_READING.md](QUICKSTART_READING.md) |
-| 架構與取捨 | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| Docker / CI | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
-
-流程：MarkItDown → 章節分塊 → BGE + Qdrant（可選 BM25 hybrid）→ Ollama 生成。核心為 `core.pipeline`；LangChain / LangGraph 僅可選對照。
+| 本檔 | 安裝、格式、API、`naval-almanac` 範例 |
+| [docs/LEARNING.md](docs/LEARNING.md) | **學習筆記**：RRF、向量庫取捨、為何不用 LC 當核心、splitter QA |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 三層架構、目錄 |
+| [QUICKSTART_READING.md](QUICKSTART_READING.md) | `chat.py` 指令 |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker / CI |
 
 ---
 
-## 架構一覽
+## 1. 支援哪些格式？
+
+`sample_books/` 內下列副檔名會被 `build_index.py` 掃描（見 `ingest/formats.py`）：
+
+| 類型 | 副檔名 | 處理方式 |
+|------|--------|----------|
+| MarkItDown | `.pdf` `.epub` `.docx` `.doc` `.html` `.htm` `.pptx` `.xlsx` | 轉成 `outputs/<檔名>.md` |
+| 原生 Markdown | `.md` `.markdown` | 複製到 `outputs/` 並做輕量清理 |
+
+EPUB 等若轉檔失敗，可先改成 PDF 或自行準備 `.md` 放入 `sample_books/`。
+
+**其他 PDF 勿 commit**；repo 只附範例 `sample_books/naval-almanac.pdf`（見該目錄 README 版權說明）。
+
+---
+
+## 2. 五分鐘跑通（內附《納瓦爾寶典》）
+
+Clone 後已有 **`sample_books/naval-almanac.pdf`**，`book_id` 固定為 **`naval-almanac`**。
+
+```bash
+brew install uv ollama
+cd book-spirit
+uv sync
+ollama pull qwen2.5:7b-instruct-q4_K_M
+ollama serve   # 另開終端
+
+uv run python scripts/build_index.py --book naval-almanac
+uv run python scripts/chat.py
+```
+
+可問：`什麼是專長？`、`納瓦尔推薦的閱讀方法是什麼？` → 滿意則 `/save`。
+
+重建索引：`uv run python scripts/build_index.py --book naval-almanac --force`  
+再加自己的書：丟進 `sample_books/` 後 `build_index.py --all`（會跳過未變更的書）。
+
+---
+
+## 3. 整條 pipeline 在做什麼？
 
 ```mermaid
-flowchart TB
-    subgraph ingest [Ingest — 換書重做]
-        PDF[PDF] --> Chunk[章節分塊] --> Qdrant[(Qdrant)]
-    end
-    subgraph rag [RAG — 可換 embedding / 策略]
-        Qdrant --> Retrieve[retrieve]
-        Retrieve --> Ollama[Ollama 生成]
-    end
-    subgraph memory [Memory — 你的理解]
-        SQLite[(SQLite 筆記)]
-    end
-    ingest --> rag
-    SQLite --> Chat[問答]
-    Retrieve --> Chat
-    Chat -->|/save| SQLite
+flowchart LR
+    Src[PDF/EPUB/MD...] --> MD[Markdown]
+    MD --> Chunk[分塊 + 章節標籤]
+    Chunk --> Embed[BGE 向量]
+    Embed --> Qdrant[(Qdrant)]
+    Chunk --> BM25[BM25 語料檔]
+    Qdrant --> Retrieve[檢索]
+    BM25 --> Retrieve
+    Retrieve --> LLM[Ollama 生成]
+    LLM --> Answer[回答 + 引用]
+    Answer --> SQLite[(SQLite 筆記 /save)]
 ```
 
-> 完整模組表、取捨、不做清單：[ARCHITECTURE.md](ARCHITECTURE.md)
-
-### 檢索策略（進階，可選）
-
-| `retrieval_strategy` | 行為 |
-|----------------------|------|
-| `vector`（預設） | 純向量 |
-| `hybrid` | BM25 + 向量 RRF |
-| `hybrid_rerank` | hybrid → cross-encoder |
-
-### Backend（可選對照）
-
-| Backend | 說明 |
-|---------|------|
-| `native` | **預設**，實際幹活 |
-| `langchain` / `langgraph` | 薄層；`uv sync --group langchain` |
+與 [ARCHITECTURE.md](ARCHITECTURE.md) 的 **Ingest / RAG / Memory** 三層一致；差別在：本檔講「怎麼用、名詞是什麼」，ARCHITECTURE 講「模組放哪、取捨」。
 
 ---
 
-## 快速開始（工程）
+## 4. 名詞解釋（讀 README 會看到的詞）
 
-### 1. 安裝依賴（[uv](https://docs.astral.sh/uv/)）
+### RAG（Retrieval-Augmented Generation）
 
-```bash
-# 安裝 uv（若尚未安裝）
-brew install uv
+先**從書裡搜出相關段落**，再交給 LLM 根據這些段落回答，降低瞎編。本專案核心在 `core/pipeline.py` 的 `NativeRAG`。
 
-# 核心 pipeline（步驟 1–4，native 檢索）
-uv sync
+### ETL（本專案裡指「入庫」三步）
 
-# 完整 API（含 LangChain + LangGraph）
-uv sync --group langchain
-```
+| 字母 | 意思 | 本 repo |
+|------|------|---------|
+| **E** Extract | 取出原文 | 書籍檔 → Markdown（`ingest/converter.py`） |
+| **T** Transform | 整理成可搜尋單位 | 分塊 + `chapter` / `heading`（`ingest/chunker.py`） |
+| **L** Load | 寫進儲存 | 向量進 Qdrant、BM25 寫 `qdrant_storage/bm25_<book_id>.json`（`ingest/indexer.py`） |
 
-> 請勿對系統 Python 直接 `pip install`（macOS Homebrew 會阻擋）。  
-> 依賴唯一來源：`pyproject.toml` + `uv.lock`。
+一鍵等同 `scripts/build_index.py`；`bash etl/run_pipeline.sh` 還會順跑檢索預覽評測。
 
-日常讀書 → **[QUICKSTART_READING.md](QUICKSTART_READING.md)**（`scripts/build_index.py` → `scripts/chat.py`）
+### Embedding / 向量（vector）
 
-### 2. 準備書籍
+把一段文字變成**固定長度的數字向量**（本專案用 `BAAI/bge-small-zh-v1.5`）。  
+**語意相近的段落，向量距離較近。** 問句也會 embed 一次，再到 Qdrant 找最相近的 chunk。
 
-將 PDF 放入 `sample_books/`。
+查詢時會加前綴 `query:`（BGE 建議用法，見 `core/config.py`）。
 
-### 3. 建索引 + 問答
+### 向量檢索（`retrieval_strategy: vector`，預設）
 
-```bash
-ollama serve   # 另一終端
-uv run python scripts/build_index.py
-uv run python scripts/chat.py          # 問答；答完 /save 存筆記
-```
+只靠 embedding 相似度排序，適合**換句話說的語意搜尋**。
 
-### 4. 評測 / API（可選）
+### BM25
 
-```bash
-uv run python scripts/eval.py --preview
-uv run python -m api                   # http://127.0.0.1:8000/docs
-```
+傳統**關鍵字**匹配（詞頻）。專長、槓桿、具體人名等**字面對得上**時 often 更穩。  
+語料在 `qdrant_storage/bm25_<book_id>.json`，建索引時產生。
 
-```bash
-# native（預設）
-curl -X POST "http://127.0.0.1:8000/ask" \
-  -H "Content-Type: application/json" \
-  -d '{"question": "如何找到自己的專長？", "backend": "native"}'
+### Hybrid（`retrieval_strategy: hybrid`）
 
-# LangChain retriever
-curl -X POST "http://127.0.0.1:8000/ask" \
-  -H "Content-Type: application/json" \
-  -d '{"question": "如何不靠運氣致富？", "backend": "langchain"}'
+**向量 + BM25 各搜一輪**，用 **RRF** 合併排名（公式與直覺見 [docs/LEARNING.md §3](docs/LEARNING.md#3-rrf-是什麼你寫的-rpf-多半指這個)）。  
+環境變數也可設 `RETRIEVAL_MODE=hybrid`。
 
-# LangGraph workflow
-curl -X POST "http://127.0.0.1:8000/ask" \
-  -H "Content-Type: application/json" \
-  -d '{"question": "幸福是一種可以學習的技能嗎？", "backend": "langgraph"}'
-```
+### Rerank（`hybrid_rerank` 或 `use_rerank: true`）
 
-環境變數 `RAG_BACKEND=langchain` 可改預設 backend。複製 `.env.example` → `.env` 可設定 `DATABASE_URL`、`QDRANT_URL`。
+Hybrid 先抓約 15 條候選，再用 **cross-encoder**（`bge-reranker-base`）對「問題–段落」精排，最後只留 `top_k` 條。更準、更慢。
 
----
+### top_k
 
-## ETL 入庫流程
+最後送進 LLM 的**段落數**（預設 5）。越大上下文越多、越慢，也越容易塞進無關片段。
 
-詳見 [`etl/README.md`](etl/README.md)。
+### Qdrant
 
-| 階段 | 腳本 | 說明 |
-|------|------|------|
-| Extract | `ingest/converter.py` | PDF → Markdown |
-| Transform | `ingest/chunker.py` | 分塊 + 章節 metadata |
-| Load | `ingest/indexer.py` | BGE embedding → Qdrant |
+本地向量資料庫，資料在 `./qdrant_storage/`。多書時每本一個 collection：`book_<book_id>`。
 
-```bash
-bash etl/run_pipeline.sh
-```
+### Memory（SQLite）
+
+`data/reading_memory.db` 存**你自己的筆記與 profile**，與向量索引分開；換 embedding 重建索引不影響筆記。
+
+### Backend：`native` / `langchain` / `langgraph`
+
+| 值 | 說明 |
+|----|------|
+| `native` | 預設，全部走 `core.pipeline` |
+| `langchain` / `langgraph` | 薄包裝，方便對照；需 `uv sync --group langchain` |
+
+### Query Planner（可選）
+
+`.env` 設 `USE_QUERY_PLANNER=true` 時，先用 Ollama 把問題改寫成 1～3 條**檢索用**英文/中文短句（不直接回答）。見 `core/query_planner.py`。
 
 ---
 
-## REST API
+## 5. 分塊、LangChain、向量庫（深入）
 
-| 方法 | 路徑 | 說明 |
-|------|------|------|
-| GET | `/health` | Ollama / Qdrant / Postgres 連線狀態 |
-| POST | `/search` | 純向量檢索（不需 Ollama） |
-| POST | `/ask` | RAG 問答（需 Ollama） |
-| GET | `/docs` | Swagger UI（可在此試 API） |
+這幾題寫在 **[docs/LEARNING.md](docs/LEARNING.md)**，避免 README 過長：
 
-`/search` 範例：
+- §4 為何選 **Qdrant**、和其他向量庫比較  
+- §5 為何不直接用 **LangChain / LangGraph**  
+- §6 為何自研 **chunker**、現成 splitter 差在哪  
+- §8 常見 **QA**
+
+預設分塊：`chunk_size=512`、`overlap=64`（`ingest/chunker.py`）。
+
+---
+
+## 6. 怎麼測 API？
+
+### 6.1 啟動
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/search" \
-  -H "Content-Type: application/json" \
-  -d '{"question": "如何找到自己的專長？", "backend": "native", "top_k": 3}'
+ollama serve
+uv run python -m api
 ```
 
-**Metadata filter**（可選，子字串比對；`/ask` 同樣支援）：
+瀏覽器開：**http://127.0.0.1:8000/docs**（Swagger，可點「Try it out」）。
+
+### 6.2 健康檢查
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/search" \
+curl http://127.0.0.1:8000/health
+```
+
+### 6.3 純檢索（不呼叫 LLM，最快驗證索引）
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/search \
   -H "Content-Type: application/json" \
   -d '{
     "question": "什麼是專長？",
-    "chapter": "第一部分",
-    "heading": "專長",
+    "retrieval_strategy": "vector",
     "top_k": 3
-  }'
+  }' | python -m json.tool
 ```
 
-回應會多帶 `filters` 欄位，方便確認本次套用的條件。
+看回傳 `sources[].text_preview` 是否像書裡關於「專長」的段落。
 
-限制：
-
-- `chapter` / `heading` / `book_title` 來自 PDF 解析，標題可能不完整或與書中略有出入
-- 需先執行 `uv run python scripts/build_index.py` 建立 payload TEXT index 與 `bm25_corpus.json`；舊索引請重建
-- 即使 Qdrant 端 filter 未命中，仍會在 Python 再做一次子字串 post-filter
-
-**Hybrid 檢索**（BM25 + 向量，RRF 合併）：
+### 6.4 Hybrid 檢索
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/search" \
-  -H "Content-Type: application/json" \
-  -d '{"question": "如何找到自己的專長？", "retrieval_strategy": "hybrid", "top_k": 3}'
-```
-
-或 `retrieval_mode: hybrid` / 環境變數 `RETRIEVAL_MODE=hybrid`。hybrid 需 `qdrant_storage/bm25_corpus.json`（建索引時自動產生）。
-
-**Reranker**（Cross-encoder 重排，建議用 `hybrid_rerank` 一次指定）：
-
-```bash
-curl -X POST "http://127.0.0.1:8000/search" \
+curl -s -X POST http://127.0.0.1:8000/search \
   -H "Content-Type: application/json" \
   -d '{
-    "question": "如何找到自己的專長？",
-    "retrieval_strategy": "hybrid_rerank",
-    "top_k": 3
-  }'
+    "question": "納瓦尔推薦的閱讀方法",
+    "retrieval_strategy": "hybrid",
+    "top_k": 5
+  }' | python -m json.tool
 ```
 
-- 流程：hybrid 取候選 M=15（`RERANK_CANDIDATES`）→ `BAAI/bge-reranker-base` 重排 → top_k
-- 回應 `sources` 含 `score`（rerank 分數）、`retrieval_score`（RRF/向量分數）、`score_source`
-- WSL/CPU 典型延遲約 +100–300ms；預設關閉，可設 `USE_RERANK=true` 或請求帶 `use_rerank: true`
+需已跑過 `build_index.py`（會產生對應書的 `bm25_<book_id>.json`）。
 
-> Swagger 截圖：啟動 API 後開啟 http://127.0.0.1:8000/docs 即可互動測試。
+### 6.5 RAG 問答（需要 Ollama）
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "如何不靠運氣致富？",
+    "backend": "native",
+    "top_k": 5,
+    "temperature": 0.7
+  }' | python -m json.tool
+```
+
+回傳含 `answer` 與 `sources`（引用段落）。
+
+### 6.6 多書時指定 book_id
+
+先 `build_index.py --list` 查 id，再：
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "什麼是槓桿？",
+    "book_id": "naval-almanac",
+    "top_k": 5
+  }' | python -m json.tool
+```
+
+### 6.7 依章節過濾（metadata，可選）
+
+標題來自 PDF 解析，可能不完整：
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/search \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "專長",
+    "chapter": "第一部分",
+    "top_k": 3
+  }' | python -m json.tool
+```
 
 ---
 
-## 部署與 CI
+## 7. 檢索評測（`scripts/eval.py`）
 
-見 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
+**只測「搜到的段落對不對」，不測 LLM 會不會瞎掰。**
 
-## 檢索評測（`scripts/eval.py`）
+```bash
+uv run python scripts/eval.py --preview
+```
 
-**量什麼：**
-
-- 對固定測試題（《納瓦爾寶典》主題）做 top-k 向量搜尋
-- 輸出每題的 **相似度分數**（BGE + `query:` 前綴）
-- **人工評分**（1–5）：前 3 筆結果是否與問題相關
-- 彙整 **precision@k** 與 `search_quality_report.json`
-
-**怎樣算好：**
-
-- 相似度 > **0.7** 通常表示高度相關（依書籍與分塊而異）
-- precision@3 ≥ **0.7** 代表多數題目的 top-3 有可用段落
-- bad case：分數高但內容偏題 → 調 chunk size / overlap 或 heading 解析
-
-**不做的事：** 此腳本**不含 LLM 生成**，只評估檢索層，避免把生成錯誤誤判為檢索問題。
+內建題目偏《納瓦爾寶典》主題；會印每題 top-k 相似度，供你人工看相關性。  
+報告可寫入本機 `search_quality_report.json`（已在 `.gitignore`）。
 
 ---
 
-## 檔案結構
+## 8. 安裝選項
 
-見 [ARCHITECTURE.md#目錄結構](ARCHITECTURE.md#目錄結構)。
+```bash
+uv sync                              # 核心：ingest + RAG + API + pytest
+uv sync --group langchain            # 外加 LangChain / LangGraph 對照
+```
+
+依賴以 `pyproject.toml` + `uv.lock` 為準；勿對系統 Python 直接 `pip install`。
+
+環境變數：複製 `.env.example` → `.env`（Ollama、`RETRIEVAL_MODE`、`USE_QUERY_PLANNER` 等）。
 
 ---
 
-## 技術決策
+## 9. 目錄與模組
 
-| 選項 | 原因 |
+與 [ARCHITECTURE.md#目錄結構](ARCHITECTURE.md#目錄結構) 相同：
+
+| 路徑 | 職責 |
 |------|------|
-| MarkItDown | 微軟維護、中文 PDF 轉 MD 夠用 |
-| 自研分塊 | 可精準處理無 `#` 標題的中文書籍結構 |
-| BGE-small-zh | 中文輕量、M4/WSL 可跑；查詢需 `query:` 前綴 |
-| Qdrant 本地 | Vector DB 展示、metadata 過濾、延遲低 |
-| Ollama | 本地 LLM、隱私優先 |
-| LangChain 薄層 | 可選，與 native 結果對照 |
-| LangGraph | 多步 workflow 敘事（retrieve → generate） |
+| `ingest/` | PDF→MD、分塊、建索引 |
+| `core/` | 檢索、hybrid、rerank、pipeline |
+| `memory/` | SQLite 筆記 |
+| `api/` | FastAPI |
+| `scripts/build_index.py` | 入庫入口 |
+| `scripts/chat.py` | 終端問答 |
+| `scripts/eval.py` | 檢索評測 |
+| `integrations/` | LangChain / LangGraph（可選） |
 
 ---
 
-## 硬體要求
+## 10. 常見問題
 
-| 配件 | 需求 |
-|------|------|
-| CPU | 任何現代 x64 / ARM |
-| 記憶體 | 8GB+（16GB 較舒適，含 Ollama 7B） |
-| 磁碟 | ~15GB（模型 + Qdrant + PyTorch） |
+**Q: 支援哪些格式？**  
+A: 見上文 §1；清單在 `ingest/formats.py`。
 
----
-
-## 常見問題
-
-**Q: LangChain backend 啟動失敗？**  
-A: 執行 `uv sync --group langchain`。
+**Q: LangChain backend 失敗？**  
+A: `uv sync --group langchain`。
 
 **Q: 搜尋結果差？**  
-A: 先跑 `uv run python scripts/eval.py --preview`，調 chunk size（預設 512）或 overlap（64），再重建索引。
+A: `eval.py --preview` → 調 `chunk_size` / `overlap` → `build_index.py --book <id> --force`。
 
 **Q: Ollama 連不上？**  
-A: 另開終端執行 `ollama serve`，並確認已 pull `qwen2.5:7b-instruct-q4_K_M`。
+A: 另開終端 `ollama serve`；模型見 [OLLAMA_SETUP.md](OLLAMA_SETUP.md)。
 
-**Q: Qdrant 資料在哪？**  
-A: `./qdrant_storage/`（持久化，刪除後需重跑步驟 3）。
+**Q: 資料存在哪？**  
+A: 向量 `qdrant_storage/`、筆記 `data/reading_memory.db`、轉檔 `outputs/`（皆不應提交 Git）。
 
 ---
 
-## 下一步
+## 11. 還可玩什麼
 
-- 問答 + `/save` 累積筆記  
-- `scripts/eval.py` 自訂檢索題庫  
-- 可選：hybrid / rerank / query planner（`.env`）  
+- `chat.py`：`/books`、`/book <id>`、`/save`（見 [QUICKSTART_READING.md](QUICKSTART_READING.md)）
+- `.env`：`USE_QUERY_PLANNER=true`、`RETRIEVAL_MODE=hybrid`
+- 部署：[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 
-個人實作清單見本機 `Todo.md`（不納入版本庫）。
+個人實作筆記在本機 `Todo.md`（不進 Git）。

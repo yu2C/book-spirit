@@ -1,6 +1,8 @@
 # ETL 入庫流程
 
-與 [`ARCHITECTURE.md`](../ARCHITECTURE.md) 的 **ingest** 層對應。
+與 **ingest** 層相同；名詞與 API 見 [README.md](../README.md)，架構見 [ARCHITECTURE.md](../ARCHITECTURE.md)。
+
+支援格式見 `ingest/formats.py`（PDF、EPUB、MD 等）。
 
 | 階段 | 模組 | 說明 |
 |------|------|------|

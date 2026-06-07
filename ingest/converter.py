@@ -1,101 +1,105 @@
 """
-第一步：PDF → Markdown 轉換
-使用 MarkItDown（微軟官方）轉換 PDF 為結構化 Markdown
-
-安裝：pip install markitdown
+Extract: book source → Markdown in outputs/
+Uses MarkItDown for binary/office formats; native .md is copied + normalized.
 """
+
+from __future__ import annotations
 
 import sys
 from pathlib import Path
 
 from markitdown import MarkItDown
 
+from ingest.chunker import normalize_md_text
+from ingest.formats import MARKDOWN_NATIVE_EXTENSIONS, MARKITDOWN_EXTENSIONS
 
-def convert_pdf_to_markdown(pdf_path: str, output_dir: str = "outputs") -> str:
+
+def convert_source_to_markdown(source_path: str, output_dir: str = "outputs") -> str:
     """
-    轉換 PDF 為 Markdown
-    
+    Convert or stage a book source file to outputs/<stem>.md.
+
     Args:
-        pdf_path: PDF 檔案路徑
-        output_dir: 輸出目錄
-        
+        source_path: PDF, EPUB, DOCX, MD, etc.
+        output_dir: output directory
+
     Returns:
-        輸出的 Markdown 檔案路徑
+        Path to Markdown file as string
     """
-    # 建立輸出目錄
+    src = Path(source_path).resolve()
+    if not src.is_file():
+        raise FileNotFoundError(source_path)
+
     Path(output_dir).mkdir(exist_ok=True)
-    
-    # 生成輸出檔名
-    pdf_name = Path(pdf_path).stem
-    output_path = Path(output_dir) / f"{pdf_name}.md"
-    
-    print(f"🔄 開始轉換: {pdf_path}")
+    output_path = Path(output_dir) / f"{src.stem}.md"
+    ext = src.suffix.lower()
+
+    print(f"🔄 開始處理: {src}")
     print(f"📝 輸出位置: {output_path}")
-    
+
     try:
-        # 初始化 MarkItDown
-        md = MarkItDown()
-        
-        # 轉換 PDF
-        result = md.convert(pdf_path)
-        
-        # 寫入文件
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(result.text_content)
-        
-        # 統計
-        lines = result.text_content.split('\n')
-        chars = len(result.text_content)
-        
-        print("✅ 轉換成功！")
-        print(f"   - 行數: {len(lines)}")
+        if ext in MARKDOWN_NATIVE_EXTENSIONS:
+            text = src.read_text(encoding="utf-8")
+            text = normalize_md_text(text)
+            output_path.write_text(text, encoding="utf-8")
+        elif ext in MARKITDOWN_EXTENSIONS:
+            converter = MarkItDown()
+            result = converter.convert(str(src))
+            text = normalize_md_text(result.text_content)
+            output_path.write_text(text, encoding="utf-8")
+        else:
+            raise ValueError(
+                f"不支援的副檔名 {ext}；支援: {', '.join(sorted(MARKITDOWN_EXTENSIONS | MARKDOWN_NATIVE_EXTENSIONS))}"
+            )
+
+        if ext not in MARKDOWN_NATIVE_EXTENSIONS and output_path.stat().st_size == 0:
+            raise RuntimeError("轉換結果為空，請確認格式依賴已安裝（見 pyproject.toml markitdown extras）")
+
+        chars = len(output_path.read_text(encoding="utf-8"))
+        print("✅ 處理成功！")
         print(f"   - 字數: {chars}")
         print(f"💾 已保存到: {output_path}")
-        
         return str(output_path)
-        
+
     except FileNotFoundError:
-        print(f"❌ 找不到檔案: {pdf_path}")
+        print(f"❌ 找不到檔案: {source_path}")
         sys.exit(1)
-    except Exception as e:
-        print(f"❌ 轉換失敗: {e}")
+    except Exception as exc:
+        print(f"❌ 轉換失敗: {exc}")
         sys.exit(1)
 
-def preview_markdown(md_path: str, max_lines: int = 50):
+
+def convert_pdf_to_markdown(pdf_path: str, output_dir: str = "outputs") -> str:
+    """Backward-compatible alias."""
+    return convert_source_to_markdown(pdf_path, output_dir=output_dir)
+
+
+def preview_markdown(md_path: str, max_lines: int = 50) -> None:
     """預覽 Markdown 前幾行"""
-    with open(md_path, 'r', encoding='utf-8') as f:
-        lines = f.readlines()
-    
+    with open(md_path, encoding="utf-8") as handle:
+        lines = handle.readlines()
+
     print(f"\n📖 預覽前 {max_lines} 行:")
     print("=" * 80)
-    for i, line in enumerate(lines[:max_lines]):
+    for line in lines[:max_lines]:
         print(line.rstrip())
-        if i > max_lines:
-            break
     print("=" * 80)
 
-if __name__ == "__main__":
-    # 使用方法
-    if len(sys.argv) > 1:
-        pdf_file = sys.argv[1]
-    else:
-        # 預設找 sample_books 目錄下的第一個 PDF
-        from core.config import SAMPLE_BOOKS_DIR
 
-        sample_dir = SAMPLE_BOOKS_DIR
-        pdf_files = list(sample_dir.glob("*.pdf"))
-        
-        if not pdf_files:
+if __name__ == "__main__":
+    from core.config import SAMPLE_BOOKS_DIR
+    from ingest.formats import iter_sample_books
+
+    if len(sys.argv) > 1:
+        source_file = sys.argv[1]
+    else:
+        books = list(iter_sample_books(SAMPLE_BOOKS_DIR))
+        if not books:
             print("❌ 使用方法:")
-            print("   uv run python -m ingest.converter <PDF路徑>")
-            print("\n   或在 sample_books/ 目錄放 PDF 檔案，直接執行本腳本")
+            print("   uv run python -m ingest.converter <書籍路徑>")
+            print(f"\n   或在 {SAMPLE_BOOKS_DIR} 放支援格式的檔案")
             sys.exit(1)
-        
-        pdf_file = str(pdf_files[0])
-        print(f"📚 找到 PDF: {pdf_file}")
-    
-    # 執行轉換
-    md_path = convert_pdf_to_markdown(pdf_file)
-    
-    # 預覽結果
+        source_file = str(books[0])
+        print(f"📚 找到: {source_file}")
+
+    md_path = convert_source_to_markdown(source_file)
     preview_markdown(md_path)

@@ -1,56 +1,69 @@
-# Book Spirit — 架構與定位
+# Book Spirit — 架構
 
-## 這是什麼
+> **安裝、格式、API、`naval-almanac` 範例：** [README.md](README.md)  
+> **RRF / 向量庫 / LC vs native / splitter：** [docs/LEARNING.md](docs/LEARNING.md)  
+> **chat 指令：** [QUICKSTART_READING.md](QUICKSTART_READING.md)
 
-**Book Spirit** 是我自己做來**理解 RAG** 的本地 toy：把 PDF 拆成段落、建向量索引、用檢索 + 本地 LLM 問答，再把內化後的理解存進 **SQLite Memory**。
+## 定位
 
-它不是產品，也不追求取代任何現成閱讀工具。
+個人 **RAG 學習 toy**：書籍檔（PDF / EPUB / MD…）入庫 → 檢索 → Ollama 問答 → SQLite 筆記。
 
-**主線：** 建索引 → 問答（附引用）→ `/save` 筆記 → 下次帶著筆記再問。
-
-**你會親手碰到的環節：** 分塊、embedding、Qdrant、BM25/hybrid（可選）、檢索評測、生成 prompt。
+**主線：** `build_index.py` → `chat.py`（或 API）→ `/save`
 
 ---
 
-## 三層模型
+## 三層
 
 ```mermaid
 flowchart TB
-    subgraph memory [Memory — 你的理解]
-        SQLite[(SQLite\nreading_notes + profile)]
-    end
-
-    subgraph rag [RAG — 可替換、可重建]
-        BGE[BGE embedding]
-        Qdrant[(Qdrant\n書籍段落)]
-        Hybrid[hybrid / rerank 可選]
-    end
-
     subgraph ingest [Ingest — 換書重做]
-        PDF[PDF] --> MD[Markdown]
-        MD --> Chunk[章節分塊]
-        Chunk --> Index[建索引]
+        Src[書籍檔] --> MD[Markdown]
+        MD --> Chunk[分塊]
+        Chunk --> Index[Qdrant + BM25 檔]
+    end
+
+    subgraph rag [RAG — 可重建]
+        Qdrant[(Qdrant)]
+        Retrieve[vector / hybrid / rerank]
+        Ollama[Ollama]
+    end
+
+    subgraph memory [Memory — 長期保留]
+        SQLite[(SQLite)]
     end
 
     ingest --> rag
-    memory --> Chat[問答 /ask]
-    rag --> Chat
-    Chat --> Save["/save"]
-    Save --> memory
+    rag --> Chat[問答]
+    memory --> Chat
+    Chat -->|/save| SQLite
 ```
 
-換 embedding 或重建 Qdrant 只動 **ingest + rag**；**SQLite 筆記保留**。
+重建 Qdrant / 換 embedding **不刪** SQLite 筆記。
 
 ---
 
-## 日常使用
+## 入庫（與 README「ETL」同義）
 
-見 [QUICKSTART_READING.md](QUICKSTART_READING.md)。
+| 步驟 | 模組 | 說明 |
+|------|------|------|
+| Extract | `ingest/converter.py` | MarkItDown + 原生 `.md`（見 `ingest/formats.py`） |
+| Transform | `ingest/chunker.py` | 自研分塊（中文章節、裁後記） |
+| Load | `ingest/indexer.py` | BGE → `book_<id>` collection + `bm25_<id>.json` |
 
-1. `scripts/build_index.py` — PDF → chunk → Qdrant + BM25  
-2. `scripts/chat.py` — 問答、`/book`、`/save`  
-3. （可選）`scripts/eval.py` — 固定題測檢索，不混 LLM 幻覺  
-4. （可選）`python -m api` — FastAPI 同一套 pipeline  
+入口：`scripts/build_index.py`（`--all` / `--book` / `--list` / `--archive`）
+
+---
+
+## 問答路徑
+
+```
+問題 → [可選 Query Planner] → 檢索(top_k) → 組 prompt → Ollama → 回答+sources
+                              ↑
+                    vector | hybrid | hybrid_rerank
+```
+
+實作：`core/pipeline.py`（`NativeRAG`）。  
+API：`api/app.py`。終端：`scripts/chat.py`。
 
 ---
 
@@ -58,30 +71,30 @@ flowchart TB
 
 ```
 book-spirit/
-├── core/           # pipeline、hybrid、rerank、query planner
-├── ingest/         # PDF → MD → chunk → index
-├── memory/         # SQLite 筆記
-├── eval/           # 檢索評測
+├── core/           # pipeline, hybrid, rerank, query_planner, retrieval
+├── ingest/         # converter, chunker, indexer, books_registry
+├── memory/         # SQLite
+├── eval/           # 檢索評測邏輯
 ├── api/            # FastAPI
-├── integrations/   # LangChain / LangGraph（可選對照）
+├── integrations/   # LangChain / LangGraph（可選，委派 native）
 ├── scripts/        # build_index, chat, eval, notes_cli
 └── tests/
 ```
 
-核心路徑永遠是 `core.pipeline.NativeRAG`；integrations 僅委派 native。
-
 ---
 
-## 技術決策（簡表）
+## 技術選型（簡表）
 
 | 項目 | 選擇 |
 |------|------|
-| 向量庫 | Qdrant 本地 |
-| Embedding | BGE-small-zh（查詢加 `query:` 前綴） |
-| 生成 | Ollama 本地 |
-| 個人記憶 | SQLite（與向量索引分離） |
-| 可選 | hybrid、rerank、query planner |
-| 評測 | precision@k 類檢索題，非端到端 LLM 打分 |
+| 書籍輸入 | PDF / EPUB / DOCX / MD…（範例：`naval-almanac.pdf`） |
+| 分塊 | 自研 `chunker.py`（見 README §5 理由） |
+| Embedding | BGE-small-zh + `query:` 前綴 |
+| 向量庫 | Qdrant 本地，多書分 collection |
+| 生成 | Ollama |
+| 筆記 | SQLite |
+| 可選 | BM25 hybrid、rerank、query planner |
+| 評測 | `eval.py` 只評檢索，不評 LLM |
 
 ---
 
@@ -89,17 +102,19 @@ book-spirit/
 
 - 多使用者 / 權限  
 - 自動發社群  
-- 全書人物傳記式一次答完（top-k 片段 RAG 的取捨）  
-- 以 LangChain 重寫 ingest  
+- 一次答完整本書人物傳（top-k 片段 RAG 限制）  
+- 用 LangChain 重寫 ingest  
 
 ---
 
 ## 文件地圖
 
-| 文件 | 用途 |
+| 文件 | 內容 |
 |------|------|
-| [README.md](README.md) | 安裝、API、技術說明 |
-| [QUICKSTART_READING.md](QUICKSTART_READING.md) | 讀書流程 |
+| [README.md](README.md) | 格式、API、`naval-almanac` |
+| [docs/LEARNING.md](docs/LEARNING.md) | RRF、Qdrant、LC、splitter、自學 QA |
+| [QUICKSTART_READING.md](QUICKSTART_READING.md) | chat 指令 |
+| [etl/README.md](etl/README.md) | 入庫一鍵腳本 |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker / CI |
-| [OLLAMA_SETUP.md](OLLAMA_SETUP.md) | 本地模型 |
-| [Todo.md](Todo.md) | 個人實作筆記（不進 Git） |
+| [OLLAMA_SETUP.md](OLLAMA_SETUP.md) | 模型 |
+| `Todo.md` | 個人筆記（本機，不進 Git） |
