@@ -1,78 +1,31 @@
-# 個人使用 — 理解・問答・記憶
+# Chat 使用說明
 
-> 安裝與 `naval-almanac` 範例 → [README.md](README.md)  
-> 學習筆記（RRF、Qdrant、LC）→ [docs/LEARNING.md](docs/LEARNING.md)
-
----
-
-## 第一次
+安裝與建索引 → [README.md](README.md)
 
 ```bash
-brew install uv ollama
-uv sync --group langchain   # chat 預設 LangGraph
-# 可選 MinerU 解析：uv sync --group mineru，.env 設 EXTRACT_BACKEND=mineru
-ollama pull qwen2.5:7b-instruct-q4_K_M
-ollama serve   # 另開終端
-
-# repo 已含 sample_books/naval-almanac.pdf
+uv sync --group langchain
+ollama serve
 uv run python scripts/build_index.py --book naval-almanac
-# 多本書：--all（增量）
-# 單本：--book <book_id>   書目：--list   封存(僅筆記)：--archive <book_id>
-# 改過 PDF 後：--book <id> --force
-```
-
----
-
-## 日常
-
-```bash
 uv run python scripts/chat.py
 ```
 
-請在**真正的終端**執行（Cursor / iTerm / Terminal），才能用 ←→ 改字、↑↓ 叫出先前問題；歷史存在 `~/.book_spirit_history`。
+在系統終端執行可沿用 `~/.book_spirit_history` 的上下鍵歷史。
 
-問答語言：說明用**繁體中文**；書摘**引文**照原文（英文書保留英文，中文書保留中文）。
+## 指令
 
-進階（`.env`）：
-
-```bash
-USE_QUERY_PLANNER=true      # LLM 先改寫檢索問題（多一次 Ollama）
-SHOW_RETRIEVAL_DEBUG=true   # chat 顯示檢索用查詢；或對話中 /debug
-```
-
-每本書向量在獨立 Qdrant collection `book_{book_id}`；重建索引後舊的 `books` 集合可忽略。
-
-**還沒讀過、想問「大綱／在講什麼」：** RAG 只能根據已索引片段回答，容易檢索到致謝頁而說「沒有信息」。請改問具體事件、人物、章節；英文書可用英文關鍵字（如 `DAO hack`、`The DAO`）。更新分塊後需：
-
-```bash
-uv run python scripts/build_index.py --book <book_id> --force
-```
-
-| 動作 | 指令 |
+| 指令 | 說明 |
 |------|------|
-| 問書 | 直接輸入問題 |
-| 說明 | `/help` 或 `/h` |
-| 存筆記 | `/save` 或 `/s`（需先有一則 AI 回答） |
-| 只存你的話 | `/save 我的一句心得` |
-| 列書目 | `/books`（book_id 由 PDF 檔名自動 slug） |
-| 只問當前書 | `/book <book_id>`（預設） |
-| 跨書問原文 | `/book all` |
-| 封存舊書 | `build_index.py --archive <id>`（向量刪除，筆記保留） |
-| 查看偏好 | `/profile` |
-| 設定偏好 | `/profile 我喜歡簡短回答` |
-| 離開 | `quit` 或 `q` |
+| （直接輸入） | 問當前書 |
+| `/books` | 已索引書目（含編號） |
+| `/book N` / `/book <id>` | 限定書籍 |
+| `/book all` | 跨書檢索 |
+| `/save` | 存上一則回答與問題 |
+| `/save 心得` | 只存你的文字 |
+| `/notes` / `/notes all` | 列筆記 |
+| `/profile` | 讀者偏好（會注入 prompt） |
+| `/debug` | 檢索 fallback 細節（或 `.env` `SHOW_RETRIEVAL_DEBUG=true`） |
+| `quit` | 離開 |
 
-`chat.py` 啟動時也會印同一份說明。指令須**完整拼寫**（例如 `/profile`，不是 `/pofile`）。
+封存書（只留筆記、不檢索原文）：`build_index.py --archive <book_id>`
 
-筆記：`data/reading_memory.db`（重建 Qdrant **不會**刪）
-
----
-
-## API（可選）
-
-```bash
-uv run python -m api
-# http://127.0.0.1:8000/docs
-```
-
-`curl` 範例（納瓦尔題目、vector / hybrid / ask）見 [README.md §6](README.md#6-怎麼測-api)。
+筆記在 `data/reading_memory.db`，重建 Qdrant 不會刪。

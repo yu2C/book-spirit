@@ -25,6 +25,13 @@ from qdrant_client.models import (
 from sentence_transformers import SentenceTransformer
 
 from core.collections import LEGACY_COLLECTION, collection_name_for_book, point_count_for_book
+from core.index_catalog import (
+    bm25_path,
+    index_meta_path,
+    list_indexed_book_ids,
+    load_index_meta,
+    load_library_meta_optional,
+)
 from core.config import (
     CHUNKER_MODE,
     COLLECTION_NAME,
@@ -34,6 +41,9 @@ from core.config import (
     QDRANT_URL,
     create_qdrant_client,
 )
+
+# Backward-compatible; prefer index_meta_path() at runtime.
+INDEX_META_FILE = index_meta_path()
 from ingest.books_registry import (
     STATUS_ARCHIVED,
     STATUS_INDEXED,
@@ -53,7 +63,6 @@ from ingest.chunker import (
     chunk_markdown,
 )
 
-INDEX_META_FILE = QDRANT_PATH / "index_meta.json"
 _POINT_NS = uuid.UUID("a3f2c8e1-4b5d-4e9a-9c7d-1e2f3a4b5c6d")
 
 
@@ -67,41 +76,8 @@ class BuildState:
     meta: Optional[Dict[str, Any]] = None
 
 
-def bm25_path(book_id: str) -> Path:
-    return QDRANT_PATH / f"bm25_{book_id}.json"
-
-
 def make_point_id(book_id: str, chunk_id: int) -> str:
     return str(uuid.uuid5(_POINT_NS, f"{book_id}:{chunk_id}"))
-
-
-def load_library_meta_optional() -> Optional[Dict[str, Any]]:
-    if not INDEX_META_FILE.exists():
-        return None
-    with open(INDEX_META_FILE, encoding="utf-8") as handle:
-        raw = json.load(handle)
-    if raw.get("version") == 2:
-        return raw
-    # Legacy single-book meta → v2 shape in memory
-    book_title = raw.get("book_title", "legacy")
-    bid = slug_from_source(
-        Path(raw.get("source_path") or raw.get("source_pdf", book_title + ".pdf"))
-    )
-    return {
-        "version": 2,
-        "embedding_model": raw.get("embedding_model"),
-        "collection_name": raw.get("collection_name", COLLECTION_NAME),
-        "books": {
-            bid: {
-                "book_title": book_title,
-                "num_chunks": raw.get("num_chunks", 0),
-                "source_pdf": raw.get("source_pdf"),
-                "source_pdf_mtime": raw.get("source_pdf_mtime"),
-                "source_md": raw.get("source_md"),
-                "built_at": raw.get("built_at"),
-            }
-        },
-    }
 
 
 def save_library_meta(books_meta: Dict[str, Dict[str, Any]], vector_dim: int) -> None:
@@ -116,10 +92,11 @@ def save_library_meta(books_meta: Dict[str, Dict[str, Any]], vector_dim: int) ->
         "updated_at": datetime.now().isoformat(),
         "books": books_meta,
     }
-    INDEX_META_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(INDEX_META_FILE, "w", encoding="utf-8") as handle:
+    meta_path = index_meta_path()
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(meta_path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
-    print(f"💾 索引資訊: {INDEX_META_FILE}")
+    print(f"💾 索引資訊: {meta_path}")
 
 
 def is_book_indexed(book_id: str) -> bool:
@@ -448,14 +425,3 @@ def archive_book(book_id: str) -> None:
     print(f"✅ [{book_id}] 已封存（僅保留 SQLite 筆記，問答走 Memory）")
 
 
-def list_indexed_book_ids() -> List[str]:
-    reg = load_registry()
-    return [bid for bid, e in reg.items() if e.status == STATUS_INDEXED]
-
-
-def load_index_meta() -> Dict[str, Any]:
-    """Eval / 工具用：讀取 index_meta.json。"""
-    meta = load_library_meta_optional()
-    if not meta:
-        raise FileNotFoundError("找不到索引，請先執行 scripts/build_index.py")
-    return meta

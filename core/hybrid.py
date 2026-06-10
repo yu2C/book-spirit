@@ -118,7 +118,7 @@ class BM25Index:
 
 
 def resolve_bm25_paths(filters: SearchFilters | None) -> List[Path]:
-    from ingest.indexer import bm25_path, list_indexed_book_ids
+    from core.index_catalog import bm25_path, list_indexed_book_ids
 
     if filters and filters.book_id:
         return [bm25_path(filters.book_id)]

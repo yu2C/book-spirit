@@ -30,7 +30,7 @@ def get_book_index_info(
     if not book_id or book_id == "all":
         return None
     if meta is None:
-        from ingest.indexer import load_library_meta_optional
+        from core.index_catalog import load_library_meta_optional
 
         meta = load_library_meta_optional()
     if not meta:

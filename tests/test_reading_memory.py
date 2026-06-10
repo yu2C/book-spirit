@@ -17,12 +17,14 @@ def test_add_and_search_note():
             chapter="第一部分",
             quote="專長無法被教授",
             tags="專長,財富",
+            question="什麼是專長？",
         )
         mem.set_profile("我主要關心財富篇，喜歡簡短回答。")
 
         hits = mem.search_relevant("什麼是專長", book_id="naval-almanack", limit=5)
         assert len(hits) >= 1
         assert "專長" in hits[0].my_take
+        assert hits[0].question == "什麼是專長？"
 
         block = format_notes_for_prompt(hits)
         assert "我的心得" in block

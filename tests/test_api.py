@@ -40,7 +40,7 @@ def client(app_module):
         "backend": "native",
     }
 
-    app_module.backends = {"native": mock_backend}
+    app_module.backends = {"native": mock_backend, "langgraph": mock_backend}
     app_module.query_logger.enabled = False
     return TestClient(app_module.app)
 
@@ -106,6 +106,7 @@ def test_search_passes_metadata_filters(client, app_module):
         "chapter": "第一部分",
         "heading": "專長",
         "book_title": None,
+        "book_id": None,
     }
     _, kwargs = app_module.backends["native"].retrieve.call_args
     assert kwargs["filters"].chapter == "第一部分"

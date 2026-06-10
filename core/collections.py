@@ -21,7 +21,7 @@ def vector_search_targets(book_id: Optional[str]) -> List[Tuple[str, str]]:
 
     scope_book_id 用於合併結果時標註；專屬 collection 內仍保留 payload book_id。
     """
-    from ingest.indexer import list_indexed_book_ids
+    from core.index_catalog import list_indexed_book_ids
 
     if book_id and book_id != "all":
         name = collection_name_for_book(book_id)

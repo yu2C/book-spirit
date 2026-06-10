@@ -3,7 +3,7 @@
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from ingest.books_registry import BookEntry
 from ingest.indexer import assess_build_state, bm25_path, sources_unchanged
@@ -70,24 +70,27 @@ def test_assess_build_state_skip_when_index_complete():
             }
         }
 
-        with patch("ingest.indexer.QDRANT_PATH", root / "qdrant_storage"):
-            with patch("ingest.indexer.INDEX_META_FILE", root / "qdrant_storage/index_meta.json"):
-                with patch(
-                    "ingest.books_registry.REGISTRY_FILE",
-                    root / "qdrant_storage/books_registry.json",
-                ):
-                    (root / "qdrant_storage").mkdir(parents=True)
-                    (root / "qdrant_storage/index_meta.json").write_text(
+        qdrant_root = root / "qdrant_storage"
+        with patch("core.config.QDRANT_PATH", qdrant_root):
+            with patch("ingest.indexer.QDRANT_PATH", qdrant_root):
+                with patch("ingest.indexer.INDEX_META_FILE", qdrant_root / "index_meta.json"):
+                    with patch(
+                        "ingest.books_registry.REGISTRY_FILE",
+                        qdrant_root / "books_registry.json",
+                    ):
+                        qdrant_root.mkdir(parents=True)
+                        (qdrant_root / "index_meta.json").write_text(
                         json.dumps(lib_meta), encoding="utf-8"
                     )
-                    (root / "qdrant_storage/books_registry.json").write_text(
-                        json.dumps(registry), encoding="utf-8"
-                    )
-                    bm25_path(book_id).parent.mkdir(parents=True, exist_ok=True)
-                    bm25_path(book_id).write_text("[]", encoding="utf-8")
+                        (qdrant_root / "books_registry.json").write_text(
+                            json.dumps(registry), encoding="utf-8"
+                        )
+                        bm25_path(book_id).parent.mkdir(parents=True, exist_ok=True)
+                        bm25_path(book_id).write_text("[]", encoding="utf-8")
 
-                    with patch("ingest.indexer.point_count_for_book", return_value=10):
-                        with patch("ingest.indexer.EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5"):
-                            state = assess_build_state(pdf, book_id)
-                            assert state.skip_all is True
-                            assert state.run_index is False
+                        with patch("ingest.indexer.create_qdrant_client", return_value=MagicMock()):
+                            with patch("ingest.indexer.point_count_for_book", return_value=10):
+                                with patch("ingest.indexer.EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5"):
+                                    state = assess_build_state(pdf, book_id)
+                                assert state.skip_all is True
+                                assert state.run_index is False

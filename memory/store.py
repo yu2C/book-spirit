@@ -41,6 +41,7 @@ class ReadingNote:
     my_take: str
     tags: str
     chunk_id: Optional[int]
+    question: str
     created_at: str
     updated_at: str
 
@@ -55,6 +56,7 @@ class ReadingNote:
             "my_take": self.my_take,
             "tags": self.tags,
             "chunk_id": self.chunk_id,
+            "question": self.question,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -101,6 +103,14 @@ class ReadingMemory:
                 VALUES (1, '', datetime('now'));
                 """
             )
+            cols = {
+                row[1]
+                for row in conn.execute("PRAGMA table_info(reading_notes)").fetchall()
+            }
+            if "question" not in cols:
+                conn.execute(
+                    "ALTER TABLE reading_notes ADD COLUMN question TEXT NOT NULL DEFAULT ''"
+                )
             conn.commit()
 
     def add_note(
@@ -114,6 +124,7 @@ class ReadingMemory:
         quote: str = "",
         tags: str = "",
         chunk_id: Optional[int] = None,
+        question: str = "",
     ) -> ReadingNote:
         now = _utc_now()
         with self._connect() as conn:
@@ -121,8 +132,8 @@ class ReadingMemory:
                 """
                 INSERT INTO reading_notes (
                     book_id, book_title, chapter, heading, quote, my_take, tags,
-                    chunk_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    chunk_id, question, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     book_id,
@@ -133,6 +144,7 @@ class ReadingMemory:
                     my_take,
                     tags,
                     chunk_id,
+                    question,
                     now,
                     now,
                 ),
@@ -184,9 +196,10 @@ class ReadingMemory:
         for kw in keywords:
             pattern = f"%{kw}%"
             clauses.append(
-                "(my_take LIKE ? OR quote LIKE ? OR chapter LIKE ? OR heading LIKE ? OR tags LIKE ?)"
+                "(my_take LIKE ? OR quote LIKE ? OR chapter LIKE ? OR heading LIKE ? "
+                "OR tags LIKE ? OR question LIKE ?)"
             )
-            params.extend([pattern] * 5)
+            params.extend([pattern] * 6)
         where = "(" + " OR ".join(clauses) + ")"
         if book_id:
             where = "book_id = ? AND " + where
@@ -246,6 +259,7 @@ class ReadingMemory:
             my_take=row["my_take"],
             tags=row["tags"] or "",
             chunk_id=row["chunk_id"],
+            question=row["question"] if "question" in row.keys() else "",
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -258,6 +272,8 @@ def format_notes_for_prompt(notes: List[ReadingNote]) -> str:
     for i, n in enumerate(notes, 1):
         loc = " / ".join(x for x in (n.book_title, n.chapter, n.heading) if x)
         lines.append(f"\n[筆記 {i}] {loc or n.book_id}")
+        if n.question:
+            lines.append(f"當時問題：{n.question}")
         if n.quote:
             lines.append(f"原文摘錄：{n.quote}")
         lines.append(f"我的心得：{n.my_take}")

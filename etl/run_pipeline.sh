@@ -9,4 +9,4 @@ uv run python scripts/build_index.py
 echo "=== Eval preview ==="
 uv run python scripts/eval.py --preview
 
-echo "✅ ETL pipeline 完成"
+echo "Done: build_index + eval preview"

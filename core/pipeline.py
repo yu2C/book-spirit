@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any, Dict, List, Optional
 
 import requests
 from sentence_transformers import SentenceTransformer
 
-from core.ask_flow import (
-    build_ask_result,
-    empty_retrieval_answer,
-    prepare_ask,
-)
-from core.books import BOOK_SCOPE_ALL
+from core.ask_orchestrator import run_ask
+from core.library_scope import BOOK_SCOPE_ALL
 from core.collections import LEGACY_COLLECTION, vector_search_targets
 from core.config import (
     DEFAULT_TOP_K,
@@ -32,8 +27,6 @@ from core.config import (
     build_qdrant_filter,
     create_qdrant_client,
 )
-from core.ingest_hints import ingest_hint_for_book
-from core.retrieve_fallback import retrieve_with_fallback
 from core.retrieval import (
     expand_retrieval_queries,
     filter_boilerplate_docs,
@@ -44,6 +37,7 @@ from core.retrieval import (
 
 def doc_to_source(doc: Dict[str, Any]) -> Dict[str, Any]:
     source = {
+        "book_id": doc.get("book_id", ""),
         "title": doc.get("book_title", ""),
         "chapter": doc.get("chapter", ""),
         "heading": doc.get("heading", ""),
@@ -281,68 +275,15 @@ class NativeRAG:
         use_memory: bool = True,
         book_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        prepared = prepare_ask(
+        return run_ask(
+            self,
             question,
+            backend_label="native",
             top_k=top_k,
+            temperature=temperature,
             filters=filters,
+            mode=mode,
+            use_rerank=use_rerank,
             use_memory=use_memory,
             book_id=book_id,
-        )
-
-        retrieval_debug = None
-        ingest_hint = None
-        if not prepared.rag_enabled:
-            retrieved: List[Dict[str, Any]] = []
-        else:
-            fb = retrieve_with_fallback(
-                self,
-                question,
-                top_k=prepared.effective_k,
-                filters=prepared.search_filters,
-                mode=mode,
-                use_rerank=use_rerank,
-                planned_queries=prepared.retrieval_queries_used or None,
-                scope_book_id=prepared.scope_book_id or book_id,
-            )
-            retrieved = fb.documents
-            retrieval_debug = fb.to_debug_dict()
-            scope = prepared.scope_book_id or book_id
-            ingest_hint = ingest_hint_for_book(
-                scope,
-                low_retrieval=fb.low_confidence or not retrieved,
-            )
-
-        if not retrieved:
-            answer = empty_retrieval_answer(prepared)
-            if ingest_hint:
-                answer = f"{answer}\n{ingest_hint}"
-            return build_ask_result(
-                prepared,
-                answer=answer,
-                sources=[],
-                llm_time=0.0,
-                backend="native",
-                retrieval_debug=retrieval_debug,
-                ingest_hint=ingest_hint,
-            )
-
-        generate_start = time.time()
-        prompt = self.build_prompt(
-            question,
-            retrieved,
-            memory_block=prepared.memory_block,
-            user_profile=prepared.user_profile,
-            planner_notes=prepared.planner_notes,
-        )
-        answer = self.generate_with_ollama(prompt, temperature=temperature)
-        llm_time = time.time() - generate_start
-
-        return build_ask_result(
-            prepared,
-            answer=answer,
-            sources=[doc_to_source(doc) for doc in retrieved],
-            llm_time=llm_time,
-            backend="native",
-            retrieval_debug=retrieval_debug,
-            ingest_hint=ingest_hint,
         )

@@ -1,19 +1,4 @@
-"""
-第六步：FastAPI 服務
-把 RAG 系統部署為 REST API
-
-運行方法：
-  uv sync --group langchain
-  uv run python -m api
-
-Docker Compose：
-  docker compose up -d
-
-然後訪問：
-  http://127.0.0.1:8000/docs  (Swagger 文檔)
-  http://127.0.0.1:8000/search  (純檢索)
-  http://127.0.0.1:8000/ask   (RAG 問答，backend: native | langchain | langgraph)
-"""
+"""Book Spirit REST API：/search、/ask、筆記。啟動：uv run python -m api"""
 
 from __future__ import annotations
 
@@ -27,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from api.query_log import QueryLogger
+from core.backends import build_rag_backend
 from core.config import (
     BACKEND_LANGCHAIN,
     BACKEND_LANGGRAPH,
@@ -38,13 +24,14 @@ from core.config import (
     SearchFilters,
     resolve_retrieval_settings,
 )
-from core.pipeline import NativeRAG, doc_to_source
+from core.pipeline import doc_to_source
+from core.retrieval_service import search_with_fallback
 from memory.store import ReadingMemory
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEFAULT_BACKEND = os.getenv("RAG_BACKEND", BACKEND_NATIVE)
+DEFAULT_BACKEND = os.getenv("RAG_BACKEND", BACKEND_LANGGRAPH)
 SKIP_INIT = os.getenv("RAG_SKIP_INIT") == "1"
 
 
@@ -52,7 +39,7 @@ class AskRequest(BaseModel):
     question: str
     top_k: int = DEFAULT_TOP_K
     temperature: float = 0.7
-    backend: str = BACKEND_NATIVE
+    backend: str = BACKEND_LANGGRAPH
     chapter: str | None = None
     heading: str | None = None
     book_title: str | None = None
@@ -102,10 +89,11 @@ class ProfileResponse(BaseModel):
 class SearchRequest(BaseModel):
     question: str
     top_k: int = DEFAULT_TOP_K
-    backend: str = BACKEND_NATIVE
+    backend: str = BACKEND_LANGGRAPH
     chapter: str | None = None
     heading: str | None = None
     book_title: str | None = None
+    book_id: str | None = None
     retrieval_mode: str | None = None
     use_rerank: bool | None = None
     retrieval_strategy: str | None = None
@@ -157,29 +145,11 @@ SearchResponse.model_rebuild()
 AskResponse.model_rebuild()
 
 
-def build_backend(name: str):
-    if name == BACKEND_NATIVE:
-        return NativeRAG()
-    if name == BACKEND_LANGCHAIN:
-        try:
-            from integrations.langchain import LangChainRAG
-        except ImportError as exc:
-            raise RuntimeError("LangChain backend 需要: uv sync --group langchain") from exc
-        return LangChainRAG()
-    if name == BACKEND_LANGGRAPH:
-        try:
-            from integrations.langgraph import LangGraphRAG
-        except ImportError as exc:
-            raise RuntimeError("LangGraph backend 需要: uv sync --group langchain") from exc
-        return LangGraphRAG()
-    raise ValueError(f"Unsupported backend: {name}")
-
-
 def init_backends() -> dict[str, object]:
-    initialized: dict[str, object] = {BACKEND_NATIVE: NativeRAG()}
-    for name in (BACKEND_LANGCHAIN, BACKEND_LANGGRAPH):
+    initialized: dict[str, object] = {}
+    for name in SUPPORTED_BACKENDS:
         try:
-            initialized[name] = build_backend(name)
+            initialized[name] = build_rag_backend(name)
         except Exception as exc:
             logger.warning("⚠️  Backend '%s' 未載入: %s", name, exc)
     return initialized
@@ -224,10 +194,14 @@ def get_backend(name: str):
 
 
 def filters_from_request(request: SearchRequest | AskRequest) -> SearchFilters | None:
+    book_id = getattr(request, "book_id", None)
+    if book_id == "all":
+        book_id = None
     filters = SearchFilters(
         chapter=request.chapter,
         heading=request.heading,
         book_title=request.book_title,
+        book_id=book_id,
     )
     return None if filters.is_empty() else filters
 
@@ -239,6 +213,7 @@ def filters_to_dict(filters: SearchFilters | None) -> dict[str, str | None] | No
         "chapter": filters.chapter,
         "heading": filters.heading,
         "book_title": filters.book_title,
+        "book_id": filters.book_id,
     }
 
 
@@ -262,24 +237,25 @@ def call_retrieve(
     filters: SearchFilters | None,
     retrieval_mode: str,
     use_rerank: bool,
+    *,
+    book_id: str | None = None,
 ):
-    if hasattr(backend, "retrieve"):
-        return backend.retrieve(
+    scope = book_id
+    if filters and filters.book_id:
+        scope = filters.book_id
+    try:
+        result = search_with_fallback(
+            backend,
             question,
             top_k=top_k,
             filters=filters,
             mode=retrieval_mode,
             use_rerank=use_rerank,
+            scope_book_id=scope,
         )
-    if hasattr(backend, "native"):
-        return backend.native.retrieve(
-            question,
-            top_k=top_k,
-            filters=filters,
-            mode=retrieval_mode,
-            use_rerank=use_rerank,
-        )
-    raise HTTPException(status_code=500, detail="Backend 不支援 retrieve")
+    except TypeError as exc:
+        raise HTTPException(status_code=500, detail="Backend 不支援 retrieve") from exc
+    return result.documents
 
 
 def call_ask(
@@ -440,6 +416,7 @@ async def search(request: SearchRequest, background_tasks: BackgroundTasks):
             filters,
             retrieval_mode,
             use_rerank,
+            book_id=request.book_id,
         )
         sources = [doc_to_source(doc) for doc in docs]
         elapsed = time.time() - start

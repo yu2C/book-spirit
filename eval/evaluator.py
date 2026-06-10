@@ -14,9 +14,10 @@ import json
 import sys
 from typing import Dict, List
 
-from core.config import SearchFilters, resolve_retrieval_settings
+from core.config import QDRANT_PATH, SearchFilters, resolve_retrieval_settings
+from core.index_catalog import index_meta_path, load_index_meta
+from core.retrieval_service import search_with_fallback
 from eval.golden import load_test_cases, score_case, summarize_golden
-from ingest import indexer as _build
 
 
 class SearchQualityEvaluator:
@@ -234,7 +235,7 @@ def run_golden_tests(
     cases_path: str | None = None,
 ):
     """用 eval/test_cases.json 自動評檢索（must_contain_any，抗 chunk 重建）。"""
-    if not _build.QDRANT_PATH.exists() or not _build.INDEX_META_FILE.exists():
+    if not QDRANT_PATH.exists() or not index_meta_path().exists():
         print("❌ 找不到 Qdrant 索引")
         print("   請先執行: uv run python scripts/build_index.py")
         sys.exit(1)
@@ -246,7 +247,7 @@ def run_golden_tests(
 
     path = Path(cases_path) if cases_path else None
     cases = load_test_cases(path)
-    meta = _build.load_index_meta()
+    meta = load_index_meta()
     books = meta.get("books") or {}
     if books:
         summary = ", ".join(f"{bid}({info.get('num_chunks', 0)})" for bid, info in books.items())
@@ -262,14 +263,15 @@ def run_golden_tests(
     for case in cases:
         book_id = case.get("book_id")
         filters = SearchFilters(book_id=book_id) if book_id else None
-        results = rag.retrieve(
+        results = search_with_fallback(
+            rag,
             case["question"],
             top_k=top_k,
             filters=filters,
             mode=mode,
             use_rerank=use_rerank,
             scope_book_id=book_id,
-        )
+        ).documents
         row = score_case(case, results, top_k=top_k)
         scored.append(row)
         mark = "✅" if row["pass"] else "❌"
@@ -324,7 +326,7 @@ def run_search_tests(
     mode: str = "vector",
     use_rerank: bool = False,
 ):
-    if not _build.QDRANT_PATH.exists() or not _build.INDEX_META_FILE.exists():
+    if not QDRANT_PATH.exists() or not index_meta_path().exists():
         print("❌ 找不到 Qdrant 索引")
         print("   請先執行: uv run python scripts/build_index.py")
         sys.exit(1)
@@ -336,7 +338,7 @@ def run_search_tests(
         print("   請重新執行: uv run python scripts/build_index.py --all")
         sys.exit(1)
 
-    meta = _build.load_index_meta()
+    meta = load_index_meta()
     books = meta.get("books") or {}
     if books:
         summary = ", ".join(f"{bid}({info.get('num_chunks', 0)})" for bid, info in books.items())
@@ -348,7 +350,7 @@ def run_search_tests(
     print(
         f"   chunker={CHUNKER_MODE} | chunk_size={meta.get('chunk_size')} | overlap={meta.get('overlap')}"
     )
-    print(f"   儲存位置: {_build.QDRANT_PATH}")
+    print(f"   儲存位置: {QDRANT_PATH}")
     print(f"   檢索模式: {mode}")
     print(f"   Rerank: {'on' if use_rerank else 'off'}")
 
@@ -373,12 +375,13 @@ def run_search_tests(
 
     for category, question in items:
         print(f"\n## [{category}]")
-        results = rag.retrieve(
+        results = search_with_fallback(
+            rag,
             question,
             top_k=3,
             mode=mode,
             use_rerank=use_rerank,
-        )
+        ).documents
         if preview:
             print_search_preview(question, results)
         else:

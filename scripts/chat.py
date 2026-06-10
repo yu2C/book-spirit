@@ -60,33 +60,47 @@ def _prompt() -> str:
 
 
 from core.backends import build_rag_backend  # noqa: E402
+from core.chat_books import format_scope_label, indexed_books_menu, resolve_book_arg  # noqa: E402
 from memory.store import ReadingMemory  # noqa: E402
 
-SLASH_COMMANDS = ("/help", "/h", "/save", "/s", "/book", "/books", "/profile", "/debug")
+SLASH_COMMANDS = (
+    "/help",
+    "/h",
+    "/save",
+    "/s",
+    "/book",
+    "/books",
+    "/notes",
+    "/profile",
+    "/debug",
+)
 
 _show_retrieval_debug = os.getenv("SHOW_RETRIEVAL_DEBUG", "false").lower() in ("1", "true", "yes")
 
 SLASH_HELP = """
 📌 斜線指令（先問答再 /save）：
   /help 或 /h        顯示本說明
-  /books             列出已登錄書目與 book_id（slug 來自 PDF 檔名）
-  /book 書籍id       只檢索該書原文（預設）
-  /book all          跨書檢索所有已索引書籍
+  /books             已索引書籍（編號）；未索引另列無編號
+  /book N            用編號切書（見 /books）
+  /book 書籍id       用 slug 切書
+  /book all          跨書檢索
   /book              顯示目前範圍
-  /save 或 /s        存上一則 AI 回答
+  /notes             最近筆記（當前書）
+  /notes all         最近筆記（全部）
+  /save 或 /s        存上一則回答（含問題）
   /profile 文字      讀者偏好
-  /debug             切換顯示檢索 debug（Planner 查詢 + fallback 輪次）
+  /debug             切換檢索 debug
   quit 或 q          離開
 """
 
 
 def _default_book_id() -> str:
     from ingest.books_registry import list_pdf_books
-    from ingest.indexer import list_indexed_book_ids
+    from core.index_catalog import list_indexed_book_ids
 
     indexed = list_indexed_book_ids()
     if indexed:
-        return indexed[0]
+        return sorted(indexed)[0]
     pdfs = list_pdf_books()
     if pdfs:
         return pdfs[0][0]
@@ -94,15 +108,48 @@ def _default_book_id() -> str:
 
 
 def _print_books() -> None:
-    from ingest.books_registry import load_registry
+    from ingest.books_registry import STATUS_INDEXED, load_registry
 
+    menu = indexed_books_menu()
+    if not menu:
+        print("（尚無已索引書籍 → uv run python scripts/build_index.py --all）")
+    else:
+        print("📗 已索引（可用 /book N 切換）：")
+        for n, bid, title in menu:
+            print(f"  [{n}] {title}")
+            print(f"      {bid}")
     reg = load_registry()
-    if not reg:
-        print("（尚無書目 → uv run python scripts/build_index.py --all）")
+    pending = [
+        (bid, e)
+        for bid, e in sorted(reg.items())
+        if e.status != STATUS_INDEXED
+    ]
+    if pending:
+        print("\n📦 未索引（需 build_index，無編號）：")
+        for bid, entry in pending:
+            print(f"  {bid}  [{entry.status}]  {entry.book_title[:60]}")
+
+
+def _print_notes(memory: ReadingMemory, book_id: str) -> None:
+    if book_id == "all":
+        notes = memory.list_notes(limit=10)
+        header = "全部書籍"
+    else:
+        notes = memory.list_notes(book_id=book_id, limit=10)
+        header = format_scope_label(book_id)
+    if not notes:
+        print(f"（{header} 尚無筆記）")
         return
-    for bid, entry in sorted(reg.items()):
-        flag = "📗" if entry.status == "indexed" else "📦"
-        print(f"  {flag} {bid}  [{entry.status}]  {entry.book_title[:60]}")
+    print(f"📝 最近筆記 — {header}（最多 10 則）")
+    for n in notes:
+        q = f"  問：{n.question[:48]}…" if len(n.question) > 48 else f"  問：{n.question}"
+        take = n.my_take.replace("\n", " ")
+        preview = take[:72] + "…" if len(take) > 72 else take
+        loc = " / ".join(x for x in (n.chapter, n.heading) if x)
+        print(f"\n  #{n.id}  {loc or n.book_id}")
+        if n.question:
+            print(q)
+        print(f"  心得：{preview}")
 
 
 def _print_answer(result: dict) -> None:
@@ -113,7 +160,7 @@ def _print_answer(result: dict) -> None:
         print(f"\n{'=' * 80}\n📚 引用來源（{len(sources)} 個）\n{'=' * 80}\n")
         for i, source in enumerate(sources, 1):
             title = source.get("title") or source.get("book_title") or ""
-            print(f"[{i}] {title}")
+            print(f"[來源 {i}] {title}")
             print(f"    {source.get('chapter', '')} → {source.get('heading', '')}")
             print(f"    相似度: {source.get('score', 0):.3f}")
             preview = source.get("text_preview") or ""
@@ -145,6 +192,13 @@ def _print_answer(result: dict) -> None:
     print("👉 覺得不錯可輸入 /save 或 /s")
 
 
+def _note_book_id(scope_book_id: str, last_result: dict) -> str:
+    if scope_book_id != "all":
+        return scope_book_id
+    src = (last_result.get("sources") or [{}])[0]
+    return src.get("book_id") or scope_book_id
+
+
 def _save_note(
     last_result: dict | None, memory: ReadingMemory, book_id: str, custom: str | None
 ) -> None:
@@ -155,30 +209,43 @@ def _save_note(
     ):
         print("❌ 尚無可儲存的有效回答")
         return
+    if book_id == "all":
+        note_book = _note_book_id(book_id, last_result)
+        if note_book == "all":
+            print("❌ 跨書問答但無來源，無法判定筆記所屬書籍")
+            return
+    else:
+        note_book = book_id
     src = (last_result.get("sources") or [{}])[0]
     note = memory.add_note(
-        book_id=book_id,
+        book_id=note_book,
         my_take=(custom or last_result["answer"]).strip(),
         book_title=src.get("title") or "",
         chapter=src.get("chapter") or "",
         heading=src.get("heading") or "",
         quote=(src.get("text_preview") or "").strip(),
         chunk_id=src.get("chunk_id"),
+        question=(last_result.get("question") or "").strip(),
     )
-    print(f"✅ 筆記 #{note.id}（{book_id}）")
+    print(f"✅ 筆記 #{note.id}（{format_scope_label(note_book)}）")
 
 
 def _suggest_slash_command(cmd: str) -> str | None:
     from difflib import get_close_matches
 
-    hit = get_close_matches(cmd, SLASH_COMMANDS, n=1, cutoff=0.75)
+    candidates = list(SLASH_COMMANDS) + ["/notes all"]
+    hit = get_close_matches(cmd, candidates, n=1, cutoff=0.75)
     return hit[0] if hit else None
 
 
 def _slash(line: str, last_result: dict | None, memory: ReadingMemory, book_id: str) -> str:
     global _show_retrieval_debug
-    parts = line.strip().split(maxsplit=1)
+    stripped = line.strip()
+    parts = stripped.split(maxsplit=1)
     cmd = parts[0].lower()
+    if cmd == "/notes" and len(parts) > 1 and parts[1].strip().lower() == "all":
+        _print_notes(memory, "all")
+        return book_id
     if cmd not in SLASH_COMMANDS and not cmd.startswith("/profile"):
         hint = _suggest_slash_command(cmd)
         if hint:
@@ -193,16 +260,19 @@ def _slash(line: str, last_result: dict | None, memory: ReadingMemory, book_id: 
         _print_books()
     elif cmd == "/book":
         if len(parts) > 1:
-            book_id = parts[1].strip()
-            if book_id == "all":
-                print("✅ 檢索範圍 = 所有已索引書籍（/book all）")
-            else:
-                print(f"✅ 檢索範圍 = 僅 {book_id}")
+            resolved, msg = resolve_book_arg(parts[1])
+            print(msg)
+            if resolved is not None:
+                book_id = resolved
         else:
-            scope = "所有已索引書籍" if book_id == "all" else f"僅 {book_id}"
-            print(f"目前檢索：{scope}")
+            print(f"目前檢索：{format_scope_label(book_id)}")
+    elif cmd == "/notes":
+        if book_id == "all":
+            print("❌ 跨書模式請用 /notes all；或 /book N 指定單書後再 /notes")
+        else:
+            _print_notes(memory, book_id)
     elif cmd == "/profile":
-        rest = line.strip()[len("/profile") :].strip()
+        rest = stripped[len("/profile") :].strip()
         if rest:
             memory.set_profile(rest)
             print("✅ 已更新 profile")
@@ -234,8 +304,7 @@ def main() -> None:
         sys.exit(1)
 
     print(f"📚 Book Spirit 問答（backend: {os.getenv('RAG_BACKEND', 'langgraph')}）")
-    scope = "全部已索引" if book_id == "all" else book_id
-    print(f"檢索範圍: {scope}（/book all 跨書；/books 列書目）")
+    print(f"檢索範圍: {format_scope_label(book_id)}（/books 看編號）")
     print(SLASH_HELP)
     if _setup_readline():
         print("⌨️  已啟用終端行編輯（←→ 移動游標，↑↓ 歷史輸入）")

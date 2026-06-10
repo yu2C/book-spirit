@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any, Dict, List, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
-from core.ask_flow import (
-    PreparedAsk,
-    build_ask_result,
-    empty_retrieval_answer,
-    prepare_ask,
-)
+from core.ask_flow import PreparedAsk, build_ask_result, prepare_ask
+from core.ask_orchestrator import execute_empty, execute_generate, execute_retrieval
 from core.config import DEFAULT_TOP_K, OLLAMA_MODEL, OLLAMA_URL, SearchFilters
-from core.ingest_hints import ingest_hint_for_book
-from core.pipeline import NativeRAG, doc_to_source
-from core.retrieve_fallback import retrieve_with_fallback
+from core.pipeline import NativeRAG
 
 
 class RAGState(TypedDict, total=False):
@@ -83,66 +76,41 @@ class LangGraphRAG:
 
     def _retrieve_node(self, state: RAGState) -> RAGState:
         prepared = state["prepared"]
-        if not prepared.rag_enabled:
-            return {
-                "documents": [],
-                "route": "empty",
-                "retrieval_debug": {"attempts": [], "low_confidence": True},
-                "ingest_hint": "",
-            }
-
-        fb = retrieve_with_fallback(
+        outcome = execute_retrieval(
             self.native,
-            prepared.question,
-            top_k=prepared.effective_k,
-            filters=prepared.search_filters,
+            prepared,
             mode=state.get("retrieval_mode"),
             use_rerank=state.get("use_rerank"),
-            planned_queries=prepared.retrieval_queries_used or None,
-            scope_book_id=prepared.scope_book_id,
+            book_id=state.get("book_id"),
         )
-        docs = fb.documents
-        hint = ingest_hint_for_book(
-            prepared.scope_book_id,
-            low_retrieval=fb.low_confidence or not docs,
-        )
-        route: Literal["generate", "empty"] = "generate" if docs else "empty"
+        route: Literal["generate", "empty"] = "generate" if outcome.documents else "empty"
         return {
-            "documents": docs,
+            "documents": outcome.documents,
             "route": route,
-            "retrieval_debug": fb.to_debug_dict(),
-            "ingest_hint": hint or "",
+            "retrieval_debug": outcome.retrieval_debug or {},
+            "ingest_hint": outcome.ingest_hint or "",
         }
 
     def _generate_node(self, state: RAGState) -> RAGState:
         prepared = state["prepared"]
         documents = state.get("documents") or []
-        generate_start = time.time()
-        prompt = self.native.build_prompt(
-            prepared.question,
+        answer, llm_time, sources = execute_generate(
+            self.native,
+            prepared,
             documents,
-            memory_block=prepared.memory_block,
-            user_profile=prepared.user_profile,
-            planner_notes=prepared.planner_notes,
-        )
-        answer = self.native.generate_with_ollama(
-            prompt,
             temperature=state.get("temperature", 0.7),
+            retrieval_debug=state.get("retrieval_debug"),
         )
         return {
             "answer": answer,
-            "sources": [doc_to_source(doc) for doc in documents],
-            "llm_time": time.time() - generate_start,
+            "sources": sources,
+            "llm_time": llm_time,
         }
 
     def _empty_node(self, state: RAGState) -> RAGState:
         prepared = state["prepared"]
-        answer = empty_retrieval_answer(prepared)
-        hint = state.get("ingest_hint") or ""
-        if hint:
-            answer = f"{answer}\n{hint}"
         return {
-            "answer": answer,
+            "answer": execute_empty(prepared, state.get("ingest_hint") or None),
             "sources": [],
             "llm_time": 0.0,
         }

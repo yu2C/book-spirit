@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from core.books import BOOK_SCOPE_ALL, resolve_ask_context
+from core.library_scope import BOOK_SCOPE_ALL, resolve_ask_context
 from core.config import SearchFilters
 from core.query_planner import QueryPlan, build_query_plan
 from core.retrieval import is_overview_question, retrieval_top_k
@@ -81,6 +81,21 @@ def prepare_ask(
         ctx_hint=ctx.hint,
         scope_book_id=book_id,
     )
+
+
+LOW_CONFIDENCE_NOTICE = (
+    "⚠️ 檢索信心偏低，以下回答請對照下方「引用來源」；若偏題可換問法、/book 確認範圍，或 /debug 查看 fallback。"
+)
+
+
+def append_low_confidence_notice(
+    answer: str, retrieval_debug: Optional[Dict[str, Any]]
+) -> str:
+    if not retrieval_debug or not retrieval_debug.get("low_confidence"):
+        return answer
+    if answer.startswith("❌"):
+        return answer
+    return f"{LOW_CONFIDENCE_NOTICE}\n\n{answer}"
 
 
 def empty_retrieval_answer(prepared: PreparedAsk) -> str:
