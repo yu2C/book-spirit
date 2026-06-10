@@ -65,9 +65,7 @@ def _process_one(book_id: str, source_path: Path, *, force: bool, preview: bool)
 
 def main() -> None:
     ext_help = ", ".join(SAMPLE_BOOK_EXTENSIONS)
-    parser = argparse.ArgumentParser(
-        description=f"建立或更新書籍向量索引（支援 {ext_help}）"
-    )
+    parser = argparse.ArgumentParser(description=f"建立或更新書籍向量索引（支援 {ext_help}）")
     parser.add_argument("--book", metavar="BOOK_ID", help="只處理此 book_id")
     parser.add_argument("--all", action="store_true", help="處理 sample_books/ 內所有書籍")
     parser.add_argument("--archive", metavar="BOOK_ID", help="封存：移除向量與 BM25，保留筆記")

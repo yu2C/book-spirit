@@ -18,10 +18,24 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
 DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "5"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 
+EXTRACT_BACKEND_MARKITDOWN = "markitdown"
+EXTRACT_BACKEND_MINERU = "mineru"
+SUPPORTED_EXTRACT_BACKENDS = (EXTRACT_BACKEND_MARKITDOWN, EXTRACT_BACKEND_MINERU)
+EXTRACT_BACKEND = os.getenv("EXTRACT_BACKEND", EXTRACT_BACKEND_MARKITDOWN).lower()
+
+CHUNKER_NATIVE = "native"
+CHUNKER_SEMANTIC = "semantic"
+SUPPORTED_CHUNKER_MODES = (CHUNKER_NATIVE, CHUNKER_SEMANTIC)
+CHUNKER_MODE = os.getenv("CHUNKER_MODE", CHUNKER_SEMANTIC).lower()
+SEMANTIC_SIMILARITY_THRESHOLD = float(os.getenv("SEMANTIC_SIMILARITY_THRESHOLD", "0.72"))
+SEMANTIC_MIN_CHUNK_SIZE = int(os.getenv("SEMANTIC_MIN_CHUNK_SIZE", "128"))
+# 相鄰句相似度落在全書最低 N% 時才切（與 threshold 取較寬鬆者）
+SEMANTIC_BREAKPOINT_PERCENTILE = float(os.getenv("SEMANTIC_BREAKPOINT_PERCENTILE", "15"))
+
 RETRIEVAL_MODE_VECTOR = "vector"
 RETRIEVAL_MODE_HYBRID = "hybrid"
 SUPPORTED_RETRIEVAL_MODES = (RETRIEVAL_MODE_VECTOR, RETRIEVAL_MODE_HYBRID)
-RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", RETRIEVAL_MODE_VECTOR)
+RETRIEVAL_MODE = os.getenv("RETRIEVAL_MODE", RETRIEVAL_MODE_HYBRID)
 
 RETRIEVAL_STRATEGY_VECTOR = "vector"
 RETRIEVAL_STRATEGY_HYBRID = "hybrid"
@@ -31,14 +45,26 @@ SUPPORTED_RETRIEVAL_STRATEGIES = (
     RETRIEVAL_STRATEGY_HYBRID,
     RETRIEVAL_STRATEGY_HYBRID_RERANK,
 )
-RETRIEVAL_STRATEGY = os.getenv("RETRIEVAL_STRATEGY", RETRIEVAL_STRATEGY_VECTOR)
+RETRIEVAL_STRATEGY = os.getenv("RETRIEVAL_STRATEGY", RETRIEVAL_STRATEGY_HYBRID_RERANK)
 RETRIEVE_CANDIDATES = int(os.getenv("RETRIEVE_CANDIDATES", "20"))
 RRF_K = int(os.getenv("RRF_K", "60"))
 BM25_CORPUS_FILE = QDRANT_PATH / "bm25_corpus.json"
 
 RERANKER_MODEL = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base")
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "15"))
-USE_RERANK = os.getenv("USE_RERANK", "false").lower() in ("1", "true", "yes")
+USE_RERANK = os.getenv("USE_RERANK", "true").lower() in ("1", "true", "yes")
+
+# Retrieve fallback ladder (LangGraph / native ask): hybrid_rerank → ↑top_k → hybrid → vector
+RETRIEVAL_MIN_TOP1_SCORE = float(os.getenv("RETRIEVAL_MIN_TOP1_SCORE", "0.55"))
+RETRIEVAL_RETRY_TOP_K_MULTIPLIER = int(os.getenv("RETRIEVAL_RETRY_TOP_K_MULTIPLIER", "2"))
+RETRIEVAL_MAX_TOP_K = int(os.getenv("RETRIEVAL_MAX_TOP_K", "12"))
+RETRIEVAL_MAX_ATTEMPTS = int(os.getenv("RETRIEVAL_MAX_ATTEMPTS", "4"))
+RETRIEVAL_RETRY_ENABLE_HYBRID = os.getenv("RETRIEVAL_RETRY_ENABLE_HYBRID", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+GOLDEN_PASS_WARN_THRESHOLD = float(os.getenv("GOLDEN_PASS_WARN_THRESHOLD", "0.65"))
 
 
 def resolve_retrieval_settings(
@@ -60,7 +86,9 @@ def resolve_retrieval_settings(
         return RETRIEVAL_MODE_HYBRID, True, RETRIEVAL_STRATEGY_HYBRID_RERANK
 
     strategy = retrieval_strategy or RETRIEVAL_STRATEGY
-    if strategy in SUPPORTED_RETRIEVAL_STRATEGIES and not (retrieval_mode or use_rerank is not None):
+    if strategy in SUPPORTED_RETRIEVAL_STRATEGIES and not (
+        retrieval_mode or use_rerank is not None
+    ):
         return resolve_retrieval_settings(retrieval_strategy=strategy)
 
     mode = retrieval_mode or RETRIEVAL_MODE
@@ -75,6 +103,7 @@ def resolve_retrieval_settings(
     else:
         label = RETRIEVAL_STRATEGY_VECTOR
     return mode, rerank, label
+
 
 BACKEND_NATIVE = "native"
 BACKEND_LANGCHAIN = "langchain"
@@ -108,15 +137,11 @@ def build_qdrant_filter(filters: SearchFilters | None):
     if filters.heading:
         must.append(FieldCondition(key="heading", match=MatchText(text=filters.heading)))
     if filters.book_title:
-        must.append(
-            FieldCondition(key="book_title", match=MatchText(text=filters.book_title))
-        )
+        must.append(FieldCondition(key="book_title", match=MatchText(text=filters.book_title)))
     if filters.book_id:
         from qdrant_client.models import MatchValue
 
-        must.append(
-            FieldCondition(key="book_id", match=MatchValue(value=filters.book_id))
-        )
+        must.append(FieldCondition(key="book_id", match=MatchValue(value=filters.book_id)))
     return Filter(must=must)
 
 

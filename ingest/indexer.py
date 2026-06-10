@@ -26,10 +26,10 @@ from sentence_transformers import SentenceTransformer
 
 from core.collections import LEGACY_COLLECTION, collection_name_for_book, point_count_for_book
 from core.config import (
-    BM25_CORPUS_FILE,
+    CHUNKER_MODE,
     COLLECTION_NAME,
     EMBEDDING_MODEL,
-    OUTPUTS_DIR,
+    EXTRACT_BACKEND,
     QDRANT_PATH,
     QDRANT_URL,
     create_qdrant_client,
@@ -84,7 +84,9 @@ def load_library_meta_optional() -> Optional[Dict[str, Any]]:
         return raw
     # Legacy single-book meta → v2 shape in memory
     book_title = raw.get("book_title", "legacy")
-    bid = slug_from_source(Path(raw.get("source_path") or raw.get("source_pdf", book_title + ".pdf")))
+    bid = slug_from_source(
+        Path(raw.get("source_path") or raw.get("source_pdf", book_title + ".pdf"))
+    )
     return {
         "version": 2,
         "embedding_model": raw.get("embedding_model"),
@@ -108,6 +110,7 @@ def save_library_meta(books_meta: Dict[str, Dict[str, Any]], vector_dim: int) ->
         "embedding_model": EMBEDDING_MODEL,
         "chunk_size": DEFAULT_CHUNK_SIZE,
         "overlap": DEFAULT_OVERLAP,
+        "chunker_mode": CHUNKER_MODE,
         "vector_dim": vector_dim,
         "collection_name": COLLECTION_NAME,
         "updated_at": datetime.now().isoformat(),
@@ -372,7 +375,9 @@ def build_index_for_book(
     with open(md_path, encoding="utf-8") as handle:
         md_text = handle.read()
 
-    print(f"\n⚙️ 生成分塊 (size={DEFAULT_CHUNK_SIZE}, overlap={DEFAULT_OVERLAP})...")
+    print(
+        f"\n⚙️ 生成分塊 (mode={CHUNKER_MODE}, size={DEFAULT_CHUNK_SIZE}, overlap={DEFAULT_OVERLAP})..."
+    )
     chunks = chunk_markdown(md_text, chunk_size=DEFAULT_CHUNK_SIZE, overlap=DEFAULT_OVERLAP)
     print(f"✅ 生成 {len(chunks)} 個分塊")
     with_chapter = sum(1 for c in chunks if c.chapter)
@@ -406,6 +411,8 @@ def build_index_for_book(
         "source_path": str(source_path.resolve()),
         "source_pdf_mtime": source_path.stat().st_mtime,
         "source_md": str(md_path.resolve()),
+        "extract_backend": EXTRACT_BACKEND,
+        "chunker_mode": CHUNKER_MODE,
         "built_at": datetime.now().isoformat(),
     }
     save_library_meta(books_meta, vector_dim)
@@ -446,61 +453,9 @@ def list_indexed_book_ids() -> List[str]:
     return [bid for bid, e in reg.items() if e.status == STATUS_INDEXED]
 
 
-# --- Legacy helpers (eval / single-md scripts) ---
-
-
 def load_index_meta() -> Dict[str, Any]:
+    """Eval / 工具用：讀取 index_meta.json。"""
     meta = load_library_meta_optional()
     if not meta:
         raise FileNotFoundError("找不到索引，請先執行 scripts/build_index.py")
     return meta
-
-
-def get_md_path() -> Path:
-    md_files = sorted(OUTPUTS_DIR.glob("*.md"))
-    if not md_files:
-        raise FileNotFoundError("找不到 outputs/*.md")
-    return md_files[0]
-
-
-def build_index(*, force: bool = False, pdf_path: Path | None = None):
-    """Backward-compatible: index one book (pdf_path = any source file)."""
-    from ingest.books_registry import list_sample_books
-
-    source_path = pdf_path
-    if source_path is None:
-        books = list_sample_books()
-        if not books:
-            raise FileNotFoundError("sample_books 內無支援格式的書籍")
-        _, source_path = books[0]
-    book_id = slug_from_source(source_path)
-    build_index_for_book(book_id, source_path, force=force)
-    return create_qdrant_client(), load_embedding_model(), None
-
-
-def init_qdrant_client(
-    recreate: bool = False,
-    vector_dim: int = 512,
-    book_id: str | None = None,
-) -> QdrantClient:
-    """Legacy entry for eval scripts."""
-    client = create_qdrant_client()
-    bids = list_indexed_book_ids()
-    bid = book_id or (bids[0] if bids else "default")
-    if recreate:
-        delete_vectors_for_book(client, bid)
-    ensure_collection(client, bid, vector_dim)
-    return client
-
-
-def is_index_complete(meta: Optional[Dict[str, Any]] = None) -> bool:
-    """Any book indexed (legacy API)."""
-    lib = meta or load_library_meta_optional()
-    if not lib:
-        return False
-    for bid in (lib.get("books") or {}):
-        if is_book_indexed(bid):
-            return True
-    if BM25_CORPUS_FILE.exists() and lib.get("embedding_model") == EMBEDDING_MODEL:
-        return True
-    return False

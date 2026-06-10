@@ -8,7 +8,12 @@ from typing import Any, Dict, List, Optional
 import requests
 from sentence_transformers import SentenceTransformer
 
-from core.books import BOOK_SCOPE_ALL, resolve_ask_context
+from core.ask_flow import (
+    build_ask_result,
+    empty_retrieval_answer,
+    prepare_ask,
+)
+from core.books import BOOK_SCOPE_ALL
 from core.collections import LEGACY_COLLECTION, vector_search_targets
 from core.config import (
     DEFAULT_TOP_K,
@@ -27,7 +32,8 @@ from core.config import (
     build_qdrant_filter,
     create_qdrant_client,
 )
-from core.query_planner import QueryPlan, build_query_plan
+from core.ingest_hints import ingest_hint_for_book
+from core.retrieve_fallback import retrieve_with_fallback
 from core.retrieval import (
     expand_retrieval_queries,
     filter_boilerplate_docs,
@@ -120,7 +126,9 @@ class NativeRAG:
 
         for cname, _bid in targets:
             if not self.qdrant_client.collection_exists(cname):
-                if cname.startswith("book_") and self.qdrant_client.collection_exists(LEGACY_COLLECTION):
+                if cname.startswith("book_") and self.qdrant_client.collection_exists(
+                    LEGACY_COLLECTION
+                ):
                     cname = LEGACY_COLLECTION
                 else:
                     continue
@@ -273,99 +281,68 @@ class NativeRAG:
         use_memory: bool = True,
         book_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        start_time = time.time()
-        memory_notes_used: List[Dict[str, Any]] = []
-        retrieval_queries_used: List[str] = []
+        prepared = prepare_ask(
+            question,
+            top_k=top_k,
+            filters=filters,
+            use_memory=use_memory,
+            book_id=book_id,
+        )
 
-        memory_block = ""
-        user_profile = ""
-        planner_notes = ""
-
-        ctx = resolve_ask_context(book_id)
-        if filters is not None and not filters.is_empty():
-            search_filters = filters
+        retrieval_debug = None
+        ingest_hint = None
+        if not prepared.rag_enabled:
+            retrieved: List[Dict[str, Any]] = []
         else:
-            search_filters = ctx.rag_filters
-
-        memory_book_id = None if book_id == BOOK_SCOPE_ALL else ctx.memory_book_id
-        if use_memory:
-            try:
-                from memory.store import ReadingMemory, format_notes_for_prompt
-
-                memory = ReadingMemory()
-                notes = memory.search_relevant(question, book_id=memory_book_id, limit=5)
-                memory_block = format_notes_for_prompt(notes)
-                user_profile = memory.get_profile()
-                memory_notes_used = [n.to_dict() for n in notes]
-            except Exception:
-                pass
-
-        plan: Optional[QueryPlan] = None
-        if ctx.rag_enabled:
-            plan = build_query_plan(question, book_id)
-        effective_k = plan.top_k if plan and plan.top_k else retrieval_top_k(question, top_k)
-        if plan:
-            retrieval_queries_used = plan.effective_queries(question)
-            planner_notes = plan.notes_for_generator
-
-        if not ctx.rag_enabled:
-            retrieved = []
-        else:
-            retrieved = self.retrieve(
+            fb = retrieve_with_fallback(
+                self,
                 question,
-                top_k=effective_k,
-                filters=search_filters,
+                top_k=prepared.effective_k,
+                filters=prepared.search_filters,
                 mode=mode,
                 use_rerank=use_rerank,
-                planned_queries=retrieval_queries_used or None,
-                scope_book_id=book_id,
+                planned_queries=prepared.retrieval_queries_used or None,
+                scope_book_id=prepared.scope_book_id or book_id,
+            )
+            retrieved = fb.documents
+            retrieval_debug = fb.to_debug_dict()
+            scope = prepared.scope_book_id or book_id
+            ingest_hint = ingest_hint_for_book(
+                scope,
+                low_retrieval=fb.low_confidence or not retrieved,
             )
 
         if not retrieved:
-            hint = ctx.hint or "❌ 未找到相關內容"
-            if ctx.rag_enabled and not ctx.hint:
-                from core.retrieval import is_overview_question
-
-                if is_overview_question(question):
-                    hint = (
-                        "❌ 檢索不到足以概括全書的段落（常見於剛開始讀）。\n"
-                        "   建議改問：具體章節、人物、事件（英文書請用 idealism、DAO 等英文關鍵字）。\n"
-                        "   若剛更新分塊，請：build_index.py --book <id> --force"
-                    )
-                else:
-                    hint = (
-                        "❌ 檢索不到可用段落（可能落在版權/致謝頁或被過濾）。\n"
-                        "   請改問更具體的人名、事件，或開 USE_QUERY_PLANNER=true 後 /debug 看檢索句"
-                    )
-            return {
-                "question": question,
-                "answer": hint,
-                "sources": [],
-                "memory_notes_used": memory_notes_used,
-                "retrieval_queries_used": retrieval_queries_used,
-                "time_elapsed": time.time() - start_time,
-                "llm_time": 0.0,
-                "backend": "native",
-            }
+            answer = empty_retrieval_answer(prepared)
+            if ingest_hint:
+                answer = f"{answer}\n{ingest_hint}"
+            return build_ask_result(
+                prepared,
+                answer=answer,
+                sources=[],
+                llm_time=0.0,
+                backend="native",
+                retrieval_debug=retrieval_debug,
+                ingest_hint=ingest_hint,
+            )
 
         generate_start = time.time()
         prompt = self.build_prompt(
             question,
             retrieved,
-            memory_block=memory_block,
-            user_profile=user_profile,
-            planner_notes=planner_notes,
+            memory_block=prepared.memory_block,
+            user_profile=prepared.user_profile,
+            planner_notes=prepared.planner_notes,
         )
         answer = self.generate_with_ollama(prompt, temperature=temperature)
         llm_time = time.time() - generate_start
 
-        return {
-            "question": question,
-            "answer": answer,
-            "sources": [doc_to_source(doc) for doc in retrieved],
-            "memory_notes_used": memory_notes_used,
-            "retrieval_queries_used": retrieval_queries_used,
-            "time_elapsed": time.time() - start_time,
-            "llm_time": llm_time,
-            "backend": "native",
-        }
+        return build_ask_result(
+            prepared,
+            answer=answer,
+            sources=[doc_to_source(doc) for doc in retrieved],
+            llm_time=llm_time,
+            backend="native",
+            retrieval_debug=retrieval_debug,
+            ingest_hint=ingest_hint,
+        )

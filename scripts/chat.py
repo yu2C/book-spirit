@@ -59,7 +59,7 @@ def _prompt() -> str:
     return input("\n❓ ").strip()
 
 
-from core.pipeline import NativeRAG  # noqa: E402
+from core.backends import build_rag_backend  # noqa: E402
 from memory.store import ReadingMemory  # noqa: E402
 
 SLASH_COMMANDS = ("/help", "/h", "/save", "/s", "/book", "/books", "/profile", "/debug")
@@ -75,7 +75,7 @@ SLASH_HELP = """
   /book              顯示目前範圍
   /save 或 /s        存上一則 AI 回答
   /profile 文字      讀者偏好
-  /debug             切換顯示檢索用查詢（Planner）
+  /debug             切換顯示檢索 debug（Planner 查詢 + fallback 輪次）
   quit 或 q          離開
 """
 
@@ -121,17 +121,38 @@ def _print_answer(result: dict) -> None:
                 print(f"    預覽: {preview}...\n")
     if result.get("memory_notes_used"):
         print(f"💭 已參考 {len(result['memory_notes_used'])} 則過往筆記")
-    queries = result.get("retrieval_queries_used") or []
-    if queries and _show_retrieval_debug:
-        print(f"\n🔍 檢索用查詢: {' | '.join(queries)}")
-    print(
-        f"\n⏱️  {result['time_elapsed']:.2f}s (LLM: {result.get('llm_time', 0):.2f}s)"
-    )
+    if _show_retrieval_debug:
+        queries = result.get("retrieval_queries_used") or []
+        if queries:
+            print(f"\n🔍 檢索用查詢: {' | '.join(queries)}")
+        rdebug = result.get("retrieval_debug") or {}
+        attempts = rdebug.get("attempts") or []
+        if attempts:
+            print("🔄 檢索 fallback:")
+            for att in attempts:
+                mark = "✓" if att.get("sufficient") else "·"
+                print(
+                    f"   [{att.get('attempt')}] {mark} {att.get('strategy')} "
+                    f"top_k={att.get('top_k')} top1={att.get('top1_score', 0):.3f} "
+                    f"n={att.get('num_docs')}"
+                )
+            if rdebug.get("final_strategy"):
+                print(f"   → 最終: {rdebug['final_strategy']}")
+    hint = result.get("ingest_hint")
+    if hint:
+        print(f"\n{hint}")
+    print(f"\n⏱️  {result['time_elapsed']:.2f}s (LLM: {result.get('llm_time', 0):.2f}s)")
     print("👉 覺得不錯可輸入 /save 或 /s")
 
 
-def _save_note(last_result: dict | None, memory: ReadingMemory, book_id: str, custom: str | None) -> None:
-    if not last_result or not last_result.get("answer") or str(last_result["answer"]).startswith("❌"):
+def _save_note(
+    last_result: dict | None, memory: ReadingMemory, book_id: str, custom: str | None
+) -> None:
+    if (
+        not last_result
+        or not last_result.get("answer")
+        or str(last_result["answer"]).startswith("❌")
+    ):
         print("❌ 尚無可儲存的有效回答")
         return
     src = (last_result.get("sources") or [{}])[0]
@@ -189,14 +210,22 @@ def _slash(line: str, last_result: dict | None, memory: ReadingMemory, book_id: 
     elif cmd == "/debug":
         _show_retrieval_debug = not _show_retrieval_debug
         state = "開啟" if _show_retrieval_debug else "關閉"
-        print(f"✅ 檢索查詢顯示: {state}（需 USE_QUERY_PLANNER=1 才有 Planner 輸出）")
+        print(f"✅ 檢索 debug: {state}（Planner 查詢 + fallback 輪次 + ingest 提示）")
     else:
         print(f"❌ 未知指令 {cmd}，/help 查看")
     return book_id
 
 
 def main() -> None:
-    rag = NativeRAG()
+    try:
+        rag = build_rag_backend()
+    except ImportError as exc:
+        print(f"❌ {exc}")
+        print("   請執行：uv sync --group langchain")
+        sys.exit(1)
+    except ValueError as exc:
+        print(f"❌ {exc}")
+        sys.exit(1)
     memory = ReadingMemory()
     book_id = os.getenv("DEFAULT_BOOK_ID") or _default_book_id()
 
@@ -204,7 +233,7 @@ def main() -> None:
         print("❌ 請先執行：ollama serve")
         sys.exit(1)
 
-    print("📚 Book Spirit 問答")
+    print(f"📚 Book Spirit 問答（backend: {os.getenv('RAG_BACKEND', 'langgraph')}）")
     scope = "全部已索引" if book_id == "all" else book_id
     print(f"檢索範圍: {scope}（/book all 跨書；/books 列書目）")
     print(SLASH_HELP)

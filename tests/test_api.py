@@ -64,9 +64,9 @@ def test_search_response_shape(client):
     assert len(data["sources"]) == 1
     assert data["sources"][0]["chunk_id"] == 12
     assert data["filters"] is None
-    assert data["retrieval_mode"] == "vector"
-    assert data["use_rerank"] is False
-    assert data["retrieval_strategy"] == "vector"
+    assert data["retrieval_mode"] == "hybrid"
+    assert data["use_rerank"] is True
+    assert data["retrieval_strategy"] == "hybrid_rerank"
 
 
 def test_search_hybrid_rerank_strategy(client, app_module):

@@ -71,7 +71,7 @@ def test_retrieve_passes_query_filter(rag_module):
 
     filters = SearchFilters(chapter="第一部分")
     with patch.object(rag_module, "build_qdrant_filter", return_value="MOCK_FILTER") as mock_build:
-        rag.retrieve("專長", top_k=3, filters=filters)
+        rag.retrieve("專長", top_k=3, filters=filters, mode="vector", use_rerank=False)
 
         assert mock_build.call_count >= 1
         assert all(call.args[0] == filters for call in mock_build.call_args_list)

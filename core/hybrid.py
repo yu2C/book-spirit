@@ -90,11 +90,15 @@ class BM25Index:
         candidate_indices = list(range(len(self.records)))
         if filters and not filters.is_empty():
             filtered_records = apply_payload_filters(self.records, filters)
-            allowed_ids = {record.get("point_id") or f"{record.get('book_id')}:{record.get('chunk_id')}" for record in filtered_records}
+            allowed_ids = {
+                record.get("point_id") or f"{record.get('book_id')}:{record.get('chunk_id')}"
+                for record in filtered_records
+            }
             candidate_indices = [
                 index
                 for index, record in enumerate(self.records)
-                if (record.get("point_id") or f"{record.get('book_id')}:{record.get('chunk_id')}") in allowed_ids
+                if (record.get("point_id") or f"{record.get('book_id')}:{record.get('chunk_id')}")
+                in allowed_ids
             ]
 
         if not candidate_indices:

@@ -164,17 +164,13 @@ def build_backend(name: str):
         try:
             from integrations.langchain import LangChainRAG
         except ImportError as exc:
-            raise RuntimeError(
-                "LangChain backend 需要: uv sync --group langchain"
-            ) from exc
+            raise RuntimeError("LangChain backend 需要: uv sync --group langchain") from exc
         return LangChainRAG()
     if name == BACKEND_LANGGRAPH:
         try:
             from integrations.langgraph import LangGraphRAG
         except ImportError as exc:
-            raise RuntimeError(
-                "LangGraph backend 需要: uv sync --group langchain"
-            ) from exc
+            raise RuntimeError("LangGraph backend 需要: uv sync --group langchain") from exc
         return LangGraphRAG()
     raise ValueError(f"Unsupported backend: {name}")
 
@@ -517,11 +513,13 @@ async def ask(request: AskRequest, background_tasks: BackgroundTasks):
             filters_to_dict(filters),
         )
 
-        memory_used = [
-            note_to_response(n) for n in result.get("memory_notes_used", [])
-        ]
+        memory_used = [note_to_response(n) for n in result.get("memory_notes_used", [])]
 
-        if request.save_note and result.get("answer") and not str(result["answer"]).startswith("❌"):
+        if (
+            request.save_note
+            and result.get("answer")
+            and not str(result["answer"]).startswith("❌")
+        ):
             bid = request.book_id or "default"
             src = result["sources"][0] if result.get("sources") else {}
             reading_memory.add_note(

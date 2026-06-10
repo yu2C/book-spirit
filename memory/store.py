@@ -146,9 +146,7 @@ class ReadingMemory:
 
     def get_note(self, note_id: int) -> Optional[ReadingNote]:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM reading_notes WHERE id = ?", (note_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM reading_notes WHERE id = ?", (note_id,)).fetchone()
         return self._row_to_note(row) if row else None
 
     def list_notes(
@@ -210,9 +208,7 @@ class ReadingMemory:
 
     def get_profile(self) -> str:
         with self._connect() as conn:
-            row = conn.execute(
-                "SELECT profile_text FROM user_profile WHERE id = 1"
-            ).fetchone()
+            row = conn.execute("SELECT profile_text FROM user_profile WHERE id = 1").fetchone()
         return row["profile_text"] if row else ""
 
     def set_profile(self, profile_text: str) -> None:

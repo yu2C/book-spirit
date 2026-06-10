@@ -3,7 +3,7 @@
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from ingest.books_registry import BookEntry
 from ingest.indexer import assess_build_state, bm25_path, sources_unchanged
@@ -72,7 +72,10 @@ def test_assess_build_state_skip_when_index_complete():
 
         with patch("ingest.indexer.QDRANT_PATH", root / "qdrant_storage"):
             with patch("ingest.indexer.INDEX_META_FILE", root / "qdrant_storage/index_meta.json"):
-                with patch("ingest.books_registry.REGISTRY_FILE", root / "qdrant_storage/books_registry.json"):
+                with patch(
+                    "ingest.books_registry.REGISTRY_FILE",
+                    root / "qdrant_storage/books_registry.json",
+                ):
                     (root / "qdrant_storage").mkdir(parents=True)
                     (root / "qdrant_storage/index_meta.json").write_text(
                         json.dumps(lib_meta), encoding="utf-8"

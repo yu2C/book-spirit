@@ -37,9 +37,7 @@ def test_log_query_when_enabled(mock_connect, query_log_module):
     conn.cursor.return_value = cur
     mock_connect.return_value = conn
 
-    logger = query_log_module.QueryLogger(
-        database_url="postgresql://u:p@localhost:5432/db"
-    )
+    logger = query_log_module.QueryLogger(database_url="postgresql://u:p@localhost:5432/db")
     assert logger.enabled is True
     logger.log_query(
         endpoint="ask",

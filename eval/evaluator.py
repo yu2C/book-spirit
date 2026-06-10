@@ -5,6 +5,7 @@
   uv run python scripts/eval.py              # 互動評分（預設 6 題）
   uv run python scripts/eval.py --preview    # 只顯示搜尋結果
   uv run python scripts/eval.py --all        # 全部題目
+  uv run python scripts/eval.py --golden     # 金標自動評分（eval/test_cases.json）
   uv run python scripts/eval.py --demo       # 說明與題目列表
 """
 
@@ -13,6 +14,8 @@ import json
 import sys
 from typing import Dict, List
 
+from core.config import SearchFilters, resolve_retrieval_settings
+from eval.golden import load_test_cases, score_case, summarize_golden
 from ingest import indexer as _build
 
 
@@ -42,7 +45,9 @@ class SearchQualityEvaluator:
             print(f"   章節: {chapter} → {heading}")
             print(f"   內容: {text}...")
 
-            rating = input("\n   👉 這個結果相關嗎？ (y/partial/n，Enter=跳過評分): ").strip().lower()
+            rating = (
+                input("\n   👉 這個結果相關嗎？ (y/partial/n，Enter=跳過評分): ").strip().lower()
+            )
             if rating == "y":
                 relevance = "relevant"
             elif rating == "partial":
@@ -52,12 +57,14 @@ class SearchQualityEvaluator:
             else:
                 relevance = "skipped"
 
-            ratings.append({
-                "rank": rank,
-                "score": score,
-                "relevance": relevance,
-                "text_preview": text,
-            })
+            ratings.append(
+                {
+                    "rank": rank,
+                    "score": score,
+                    "relevance": relevance,
+                    "text_preview": text,
+                }
+            )
 
         rated = [r for r in ratings if r["relevance"] != "skipped"]
         relevant_count = sum(1 for r in rated if r["relevance"] == "relevant")
@@ -143,7 +150,6 @@ def prepare_test_queries() -> Dict[str, List[str]]:
         "簡單事實": [
             "什么是专长？",
             "财富和金钱有什么区别？",
-            "幸福是一种技能吗？",
         ],
         "核心概念": [
             "如何不靠运气致富？",
@@ -162,7 +168,9 @@ def prepare_test_queries() -> Dict[str, List[str]]:
     }
 
 
-def flatten_queries(queries: Dict[str, List[str]], categories: List[str] | None = None) -> List[str]:
+def flatten_queries(
+    queries: Dict[str, List[str]], categories: List[str] | None = None
+) -> List[str]:
     items = []
     for category, questions in queries.items():
         if categories and category not in categories:
@@ -189,6 +197,17 @@ def print_criteria():
 """)
 
 
+def print_search_preview(question: str, search_results: List[Dict]) -> None:
+    print(f"\n❓ {question}")
+    for rank, result in enumerate(search_results[:3], 1):
+        text = result.get("text", "")[:150].replace("\n", " ")
+        score = result.get("score", 0.0)
+        chapter = result.get("chapter") or "(無)"
+        heading = result.get("heading") or "(無)"
+        print(f"  [{rank}] {score:.3f} | {chapter} → {heading}")
+        print(f"      {text}...")
+
+
 def run_demo():
     print("""
 📚 搜尋品質評估工具
@@ -205,6 +224,98 @@ def run_demo():
         print(f"\n[{category}]")
         for i, q in enumerate(questions, 1):
             print(f"  {i}. {q}")
+
+
+def run_golden_tests(
+    *,
+    mode: str = "vector",
+    use_rerank: bool = False,
+    top_k: int = 3,
+    cases_path: str | None = None,
+):
+    """用 eval/test_cases.json 自動評檢索（must_contain_any，抗 chunk 重建）。"""
+    if not _build.QDRANT_PATH.exists() or not _build.INDEX_META_FILE.exists():
+        print("❌ 找不到 Qdrant 索引")
+        print("   請先執行: uv run python scripts/build_index.py")
+        sys.exit(1)
+
+    from pathlib import Path
+
+    from core.config import CHUNKER_MODE
+    from core.pipeline import NativeRAG
+
+    path = Path(cases_path) if cases_path else None
+    cases = load_test_cases(path)
+    meta = _build.load_index_meta()
+    books = meta.get("books") or {}
+    if books:
+        summary = ", ".join(f"{bid}({info.get('num_chunks', 0)})" for bid, info in books.items())
+        print(f"📖 索引書籍: {summary}")
+    print(f"   chunker={CHUNKER_MODE} | 檢索: {mode} | rerank: {'on' if use_rerank else 'off'}")
+    print(f"🏅 金標題數: {len(cases)}（eval/test_cases.json）")
+    print(f"   規則: top-{top_k} 任一块含 must_contain_any → pass")
+
+    rag = NativeRAG()
+    scored: List[Dict] = []
+
+    print(f"\n{'=' * 80}")
+    for case in cases:
+        book_id = case.get("book_id")
+        filters = SearchFilters(book_id=book_id) if book_id else None
+        results = rag.retrieve(
+            case["question"],
+            top_k=top_k,
+            filters=filters,
+            mode=mode,
+            use_rerank=use_rerank,
+            scope_book_id=book_id,
+        )
+        row = score_case(case, results, top_k=top_k)
+        scored.append(row)
+        mark = "✅" if row["pass"] else "❌"
+        print(f"\n{mark} [{case.get('category')}] {case['question']}")
+        if case.get("expected_answer"):
+            print(f"   📎 參考答案: {case['expected_answer']}")
+        print(
+            f"   hit@{top_k}={row['hit_at_k']}  precision@{top_k}={row['precision_at_k']:.2f}",
+            end="",
+        )
+        if row["chapter_ok"] is not None:
+            print(f"  chapter_ok={row['chapter_ok']}", end="")
+        print()
+        for pr in row["per_rank"]:
+            m = "✓" if pr["matched"] else "·"
+            print(
+                f"   [{pr['rank']}] {m} {pr['score']:.3f} | {pr['chapter'][:24]} | {pr['preview']}..."
+            )
+
+    summary = summarize_golden(scored)
+    print(f"\n{'=' * 80}")
+    print("📊 金標總結")
+    print(f"   通過: {summary['passed']}/{summary['total']} ({summary['pass_rate'] * 100:.0f}%)")
+    print(f"   平均 precision@{top_k}: {summary['avg_precision_at_k']:.2f}")
+
+    from core.ingest_hints import golden_ingest_warnings
+
+    case_book_ids = [c.get("book_id") for c in cases if c.get("book_id")]
+    ingest_warnings = golden_ingest_warnings(
+        meta,
+        pass_rate=summary["pass_rate"],
+        case_book_ids=case_book_ids,
+    )
+    for w in ingest_warnings:
+        print(f"\n{w}")
+
+    report_path = "golden_eval_report.json"
+    report_payload = {
+        "summary": summary,
+        "cases": scored,
+        "ingest_warnings": ingest_warnings,
+    }
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report_payload, f, ensure_ascii=False, indent=2)
+    print(f"💾 報告: {report_path}")
+    return summary
 
 
 def run_search_tests(
@@ -232,18 +343,18 @@ def run_search_tests(
         print(f"📖 索引書籍: {summary}")
     else:
         print(f"📖 索引書籍: {meta.get('book_title', '(legacy)')}")
-    print(f"   chunk_size={meta.get('chunk_size')} | overlap={meta.get('overlap')}")
+    from core.config import CHUNKER_MODE
+
+    print(
+        f"   chunker={CHUNKER_MODE} | chunk_size={meta.get('chunk_size')} | overlap={meta.get('overlap')}"
+    )
     print(f"   儲存位置: {_build.QDRANT_PATH}")
     print(f"   檢索模式: {mode}")
     print(f"   Rerank: {'on' if use_rerank else 'off'}")
 
-    client = _build.init_qdrant_client(recreate=False)
-    model = _build.load_embedding_model(meta["embedding_model"])
-    hybrid_rag = None
-    if mode == "hybrid" or use_rerank:
-        from core.pipeline import NativeRAG
+    from core.pipeline import NativeRAG
 
-        hybrid_rag = NativeRAG()
+    rag = NativeRAG()
 
     query_map = prepare_test_queries()
     if all_questions:
@@ -262,17 +373,14 @@ def run_search_tests(
 
     for category, question in items:
         print(f"\n## [{category}]")
-        if mode == "hybrid" or use_rerank:
-            results = hybrid_rag.retrieve(
-                question,
-                top_k=3,
-                mode=mode,
-                use_rerank=use_rerank,
-            )
-        else:
-            results = _build.search(client, model, question)
+        results = rag.retrieve(
+            question,
+            top_k=3,
+            mode=mode,
+            use_rerank=use_rerank,
+        )
         if preview:
-            _build.print_search_results(question, results)
+            print_search_preview(question, results)
         else:
             evaluator.evaluate_single_query(question, results)
 
@@ -291,7 +399,7 @@ def main():
     parser.add_argument(
         "--all",
         action="store_true",
-        help="評估全部 11 題（預設 6 題）",
+        help="評估全部 10 題（預設每類 2 題）",
     )
     parser.add_argument(
         "--demo",
@@ -299,15 +407,27 @@ def main():
         help="只顯示說明與題目列表",
     )
     parser.add_argument(
+        "--golden",
+        action="store_true",
+        help="金標自動評分（eval/test_cases.json，must_contain_any）",
+    )
+    parser.add_argument(
+        "--cases",
+        metavar="PATH",
+        default=None,
+        help="金標 JSON 路徑（預設 eval/test_cases.json）",
+    )
+    parser.add_argument(
         "--mode",
         choices=("vector", "hybrid"),
-        default="vector",
-        help="檢索模式：vector（預設）或 hybrid（BM25 + 向量 RRF）",
+        default=None,
+        help="檢索模式（未指定時依 RETRIEVAL_STRATEGY / env，預設 hybrid_rerank）",
     )
     parser.add_argument(
         "--use-rerank",
-        action="store_true",
-        help="啟用 Cross-encoder rerank（候選 M=15 → top_k）",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="是否 rerank（未指定時依 env；預設 on）",
     )
     parser.add_argument(
         "--strategy",
@@ -317,19 +437,29 @@ def main():
     )
     args = parser.parse_args()
 
-    strategy = args.strategy
-    mode = args.mode
-    use_rerank = args.use_rerank
-    if strategy:
-        if strategy == "vector":
+    if args.strategy:
+        if args.strategy == "vector":
             mode, use_rerank = "vector", False
-        elif strategy == "hybrid":
+        elif args.strategy == "hybrid":
             mode, use_rerank = "hybrid", False
         else:
             mode, use_rerank = "hybrid", True
+    else:
+        mode, use_rerank, _ = resolve_retrieval_settings(
+            retrieval_mode=args.mode,
+            use_rerank=args.use_rerank,
+        )
 
     if args.demo:
         run_demo()
+        return
+
+    if args.golden:
+        run_golden_tests(
+            mode=mode,
+            use_rerank=use_rerank,
+            cases_path=args.cases,
+        )
         return
 
     run_search_tests(

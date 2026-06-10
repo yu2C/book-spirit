@@ -57,9 +57,7 @@ def expand_retrieval_queries(question: str) -> List[str]:
             ]
         )
         if re.search(r"[\u4e00-\u9fff]", question):
-            queries.append(
-                "introduction chapter 1 summary events characters timeline"
-            )
+            queries.append("introduction chapter 1 summary events characters timeline")
     elif is_thematic_question(question):
         queries.extend(
             [

@@ -1,29 +1,44 @@
 """
 Extract: book source → Markdown in outputs/
-Uses MarkItDown for binary/office formats; native .md is copied + normalized.
+EXTRACT_BACKEND=mineru 時 PDF 等走 MinerU CLI；否則 MarkItDown。
 """
 
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
 from markitdown import MarkItDown
 
+from core.config import EXTRACT_BACKEND, EXTRACT_BACKEND_MINERU
 from ingest.chunker import normalize_md_text
 from ingest.formats import MARKDOWN_NATIVE_EXTENSIONS, MARKITDOWN_EXTENSIONS
+
+logger = logging.getLogger(__name__)
+
+
+def _convert_markitdown(src: Path, output_path: Path) -> None:
+    ext = src.suffix.lower()
+    if ext in MARKDOWN_NATIVE_EXTENSIONS:
+        text = normalize_md_text(src.read_text(encoding="utf-8"))
+        output_path.write_text(text, encoding="utf-8")
+        return
+    if ext not in MARKITDOWN_EXTENSIONS:
+        raise ValueError(
+            f"不支援的副檔名 {ext}；支援: {', '.join(sorted(MARKITDOWN_EXTENSIONS | MARKDOWN_NATIVE_EXTENSIONS))}"
+        )
+    converter = MarkItDown()
+    result = converter.convert(str(src))
+    text = normalize_md_text(result.text_content)
+    output_path.write_text(text, encoding="utf-8")
+    if output_path.stat().st_size == 0:
+        raise RuntimeError("MarkItDown 轉換結果為空")
 
 
 def convert_source_to_markdown(source_path: str, output_dir: str = "outputs") -> str:
     """
     Convert or stage a book source file to outputs/<stem>.md.
-
-    Args:
-        source_path: PDF, EPUB, DOCX, MD, etc.
-        output_dir: output directory
-
-    Returns:
-        Path to Markdown file as string
     """
     src = Path(source_path).resolve()
     if not src.is_file():
@@ -33,27 +48,22 @@ def convert_source_to_markdown(source_path: str, output_dir: str = "outputs") ->
     output_path = Path(output_dir) / f"{src.stem}.md"
     ext = src.suffix.lower()
 
-    print(f"🔄 開始處理: {src}")
+    print(f"🔄 開始處理: {src}（extract={EXTRACT_BACKEND}）")
     print(f"📝 輸出位置: {output_path}")
 
     try:
-        if ext in MARKDOWN_NATIVE_EXTENSIONS:
-            text = src.read_text(encoding="utf-8")
-            text = normalize_md_text(text)
-            output_path.write_text(text, encoding="utf-8")
-        elif ext in MARKITDOWN_EXTENSIONS:
-            converter = MarkItDown()
-            result = converter.convert(str(src))
-            text = normalize_md_text(result.text_content)
-            output_path.write_text(text, encoding="utf-8")
-        else:
-            raise ValueError(
-                f"不支援的副檔名 {ext}；支援: {', '.join(sorted(MARKITDOWN_EXTENSIONS | MARKDOWN_NATIVE_EXTENSIONS))}"
-            )
+        use_mineru = EXTRACT_BACKEND == EXTRACT_BACKEND_MINERU
+        if use_mineru and ext not in MARKDOWN_NATIVE_EXTENSIONS:
+            from ingest.mineru_extract import MINERU_SOURCE_EXTENSIONS, convert_with_mineru
 
-        if ext not in MARKDOWN_NATIVE_EXTENSIONS and output_path.stat().st_size == 0:
-            raise RuntimeError("轉換結果為空，請確認格式依賴已安裝（見 pyproject.toml markitdown extras）")
+            if ext in MINERU_SOURCE_EXTENSIONS:
+                try:
+                    return convert_with_mineru(src, output_path)
+                except Exception as exc:
+                    logger.warning("MinerU 失敗，改 MarkItDown: %s", exc)
+                    print(f"⚠️  MinerU 失敗，改用 MarkItDown: {exc}")
 
+        _convert_markitdown(src, output_path)
         chars = len(output_path.read_text(encoding="utf-8"))
         print("✅ 處理成功！")
         print(f"   - 字數: {chars}")
@@ -74,7 +84,6 @@ def convert_pdf_to_markdown(pdf_path: str, output_dir: str = "outputs") -> str:
 
 
 def preview_markdown(md_path: str, max_lines: int = 50) -> None:
-    """預覽 Markdown 前幾行"""
     with open(md_path, encoding="utf-8") as handle:
         lines = handle.readlines()
 

@@ -28,6 +28,7 @@ data/
 
 # Generated / local-only
 search_quality_report.json
+golden_eval_report.json
 .book_spirit_history
 Todo.md
 

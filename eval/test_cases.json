@@ -1,0 +1,148 @@
+{
+  "version": 1,
+  "description": "《納瓦爾寶典》檢索金標。must_contain_any 供 eval.py --golden 自動評分；expected_answer 供人工 review。",
+  "cases": [
+    {
+      "id": "naval-specialization",
+      "category": "簡單事實",
+      "question": "什么是专长？",
+      "book_id": "naval-almanac",
+      "expected_answer": "專長是無法透過培訓取得的知識；若社會能培訓你，也能培訓他人取代你。專長往往具高度技術性或創造性，難以外包或自動化。",
+      "must_contain_any": [
+        "专长指的是无法通过培训获得",
+        "社会也可以培训他人来取代你",
+        "专长往往具有高度的技术性或创造性，不能被外包或自动化"
+      ],
+      "expected_chapter": "第一章　积累财富",
+      "notes": "核心定義句在「积累专长」小節"
+    },
+    {
+      "id": "naval-wealth-vs-money",
+      "category": "簡單事實",
+      "question": "财富和金钱有什么区别？",
+      "book_id": "naval-almanac",
+      "expected_answer": "追求財富，而非金錢或地位。財富是睡覺時仍為你賺錢的資產；金錢是轉換時間與財富的方式；地位是社會等級中的位置。",
+      "must_contain_any": [
+        "追求财富，而不是金钱或地位",
+        "财富是指在你睡觉时仍能为你赚钱的资产",
+        "金钱是我们转换时间和财富的方式"
+      ],
+      "expected_chapter": "第一章　积累财富",
+      "notes": "財富 vs 金錢 vs 地位三詞對照"
+    },
+    {
+      "id": "naval-luck-without",
+      "category": "核心概念",
+      "question": "如何不靠运气致富？",
+      "book_id": "naval-almanac",
+      "expected_answer": "無法靠出賣／出租時間致富；要擁有資產（公司、股權、業務）或被動收入（程式、媒體），並運用勞動力、資本槓桿與零邊際成本產品。",
+      "must_contain_any": [
+        "你无法靠出卖时间变富",
+        "调动劳动力、资本的杠杆",
+        "资产（公司、股票、实业）或被动收入（代码或媒体）"
+      ],
+      "expected_chapter": "第一章　积累财富",
+      "notes": "「如何不靠运气致富」推特系列；勿與「如何获得运气」小節混淆"
+    },
+    {
+      "id": "naval-find-specialty",
+      "category": "核心概念",
+      "question": "如何找到自己的专长？",
+      "book_id": "naval-almanac",
+      "expected_answer": "找到天賦所在並累積專長；選對你像玩耍、對他人卻很吃力的事；追求真正興趣與熱愛，專長多靠師徒傳承而非學校培訓。",
+      "must_contain_any": [
+        "找到天赋所在，积累专长",
+        "对你而言就像玩耍，对他人来说则很吃力",
+        "追求真正的兴趣和热爱，而不是盲目追逐热点"
+      ],
+      "expected_chapter": "第一章　积累财富",
+      "notes": "「找到天赋所在，积累专长」"
+    },
+    {
+      "id": "naval-leverage-types",
+      "category": "核心概念",
+      "question": "杠杆有哪些类型？",
+      "book_id": "naval-almanac",
+      "expected_answer": "商業槓桿來自資本、勞動力，以及複製邊際成本為零的產品（程式與媒體）；亦常分勞動力槓桿、資本槓桿、程式或媒體。",
+      "must_contain_any": [
+        "劳动力杠杆",
+        "资本杠杆",
+        "复制边际成本为零的产品（代码和媒体）",
+        "劳动力和复制边际成本为零的产品"
+      ],
+      "expected_chapter": "第一章　积累财富",
+      "notes": "「找到杠杆」小節"
+    },
+    {
+      "id": "naval-judgment-vs-effort",
+      "category": "深度理解",
+      "question": "为什么判断力比努力更重要？",
+      "book_id": "naval-almanac",
+      "expected_answer": "埋頭苦干不如理解與思考；努力重要但須選對方向。用判斷力賺錢：選對領域、工作性質與交易，比單純時間管理更關鍵。",
+      "must_contain_any": [
+        "更重要的是理解和思考",
+        "努力非常重要，但必须选择正确的方式",
+        "用判断力赚钱"
+      ],
+      "expected_chapter": "第二章　增强判断力",
+      "notes": "財富章亦提判斷力；答案多在第二章"
+    },
+    {
+      "id": "naval-how-to-get-luck",
+      "category": "深度理解",
+      "question": "如何获得运气？",
+      "book_id": "naval-almanac",
+      "expected_answer": "四種運氣：①不期而遇 ②堅持嘗試撞上大運 ③對別人錯過的機會敏感 ④把所做事做到極致、打造獨特聲譽讓運氣找上門。",
+      "must_contain_any": [
+        "第一种运气是不期而遇的运气",
+        "第二种运气源于坚持不懈",
+        "第三种获得好运的方式就是善于发现好运",
+        "第四种运气是最奇妙、最难得的一种"
+      ],
+      "expected_chapter": "第一章　积累财富",
+      "notes": "「如何获得运气」小節（與「不靠运气致富」不同題）"
+    },
+    {
+      "id": "naval-meditation-happiness",
+      "category": "深度理解",
+      "question": "冥想对幸福有什么帮助？",
+      "book_id": "naval-almanac",
+      "expected_answer": "冥想有助接受現實，但效果有限；真正幸福多來自內心平靜與接受現實，而非改變外在。書中「冥想+精神力量」在自我救贖章。",
+      "must_contain_any": [
+        "练习冥想能帮助你接受现实吗",
+        "冥想+精神力量",
+        "真正的幸福只是内心平和的副产品"
+      ],
+      "expected_chapter": "第四章　自我救赎",
+      "notes": "冥想訪談 + 自我救贖章標題"
+    },
+    {
+      "id": "naval-book-author",
+      "category": "邊界案例",
+      "question": "这本书的作者是谁？",
+      "book_id": "naval-almanac",
+      "expected_answer": "書面作者／編纂者為埃里克·乔根森（Eric Jorgenson），整理納瓦尔·拉维坎特的推特與訪談；納瓦尔為內容來源而非傳統意義上的單一作者。",
+      "must_contain_any": [
+        "埃里克·乔根森",
+        "纳瓦尔允许埃里克将其推特整理",
+        "埃里克的笔记（关于这本书）"
+      ],
+      "expected_chapter": "",
+      "notes": "版權頁 + 推薦序；勿只命中目錄「作者」二字"
+    },
+    {
+      "id": "naval-reading",
+      "category": "邊界案例",
+      "question": "纳瓦尔推荐的阅读方法是什么？",
+      "book_id": "naval-almanac",
+      "expected_answer": "學會熱愛閱讀；讀自己真正喜歡的題材直到愛上閱讀；不必把讀書數量當炫耀；大量閱讀科學、數學與哲學原著。",
+      "must_contain_any": [
+        "学会热爱阅读",
+        "阅读自己喜欢的题材",
+        "不要把自己读书的数量当作炫耀"
+      ],
+      "expected_chapter": "第二章　增强判断力",
+      "notes": "「学会热爱阅读」小節"
+    }
+  ]
+}
