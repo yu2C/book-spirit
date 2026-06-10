@@ -85,39 +85,152 @@ retrieve → generate
 
 ---
 
-## 6. 為何不用「更好的 splitter」？
+## 6. Chunker：自研 vs LangChain 現成
 
-常見現成方案：
+**預設 `CHUNKER_MODE=semantic`（`SEMANTIC_MIN_CHUNK_SIZE=128`）** — 納瓦尔式短句書檢索較佳。備選 `native` 給長篇章節體。
 
-- LangChain `RecursiveCharacterTextSplitter`
-- LlamaIndex `SentenceSplitter`
-- 語意分塊（embedding 相鄰句合併）等
+| `CHUNKER_MODE` | 行為 | 適合 |
+|----------------|------|------|
+| `semantic`（預設） | BGE 嵌入每句 → 主題斷點切分 + `chunk_size` 上限；保留章節 metadata | 短句 / 金句密集（納瓦尔） |
+| `native` | 自研：字數上限 + 句號斷句 + 中文章節 regex | 長篇章節敘事（Cryptopians 等） |
 
-**本專案仍自研 `ingest/chunker.py` 的原因：**
+**語意分塊（`semantic`）與模型：**
 
-1. **中文書常沒有 `#` 標題** — 納瓦尔是「第一部分」「第一章」純文字行，自研 regex 才接得上 `chapter` metadata。  
-2. **PDF 轉 MD 的髒東西** — 重複目錄、致謝、英文 Acknowledgments，要在分塊前裁掉。  
-3. **實驗變因** — chunk_size / overlap 是學習重點，寫在自己檔案裡改起來直覺。  
-4. **不是不能換** — 之後可加 `CHUNKER=langchain` 對照組，用 eval 比 precision@k。
+- **不受模型種類限制** — 直接用檢索同款 `BAAI/bge-small-zh-v1.5`（句級 embedding，**不加** `query:`）。
+- **受限的是任務匹配度** — BGE 為檢索訓練，不是專門做「段落邊界偵測」。納瓦尔相鄰句 cosine 中位數約 **0.49**（多數句對都偏低），固定 threshold `0.72` 會切到五千多塊；實作改為 **`SEMANTIC_MIN_CHUNK_SIZE=256`** + **全書相似度最低 15% 才切**（`SEMANTIC_BREAKPOINT_PERCENTILE`）。
+- **代價** — 建索引時多 embed 每一句（~5500 句約 7s）；chunk 仍再 embed 一次寫 Qdrant。
+- **優點** — 保留自研 `chapter`/`heading` metadata（走同一套 line walk）。
 
-**更好的 splitter 存在，但「更好」常指英文 Wiki / 有乾淨 Markdown 的場景**；你手上的中文 PDF 未必符合那些假設。
+```bash
+# 對照：換 chunker 後重建索引，再 eval
+uv run python scripts/build_index.py --book naval-almanac --force   # 預設 semantic
+CHUNKER_MODE=native uv run python scripts/build_index.py --book naval-almanac --force
+uv run python scripts/eval.py --preview --all
+```
+
+**實測（`naval-almanac.pdf` → MarkItDown，106k 字）：**
+
+| chunker | 分塊數 | 有 `chapter` metadata | 平均長度 |
+|---------|--------|----------------------|----------|
+| native | 256 | 256 | ~479 |
+| semantic（min=128） | 463 | 463 | ~273 |
+
+**納瓦尔特別適合語意切：** 全書 5487 句、**中位句長 16 字**、82% ≤30 字（金句/條列體）。記憶體內 11 題檢索對照（BGE top1 均分）：
+
+| 模式 | 塊數 | top1 均分 | top3 均分 | 勝場 |
+|------|------|-----------|-----------|------|
+| native | 256 | 0.644 | 0.623 | — |
+| semantic min=256 | 310 | 0.660 | 0.628 | 多數題 ↑ |
+| **semantic min=128** | 463 | **0.668** | **0.646** | **8/11 題** |
+
+「什么是专长？」top1：native **0.611** → semantic **0.724**（同一章「积累财富」金句群被聚在一起）。
+
+**納瓦尔建議參數：**
+
+```bash
+CHUNKER_MODE=semantic SEMANTIC_MIN_CHUNK_SIZE=128 \
+  uv run python scripts/build_index.py --book naval-almanac --force
+```
+
+長篇章節式書（如 Cryptopians）未必有同樣收益，可改 `native` 後 `eval.py` 對照。調參：`SEMANTIC_BREAKPOINT_PERCENTILE` 愈小切愈少、`SEMANTIC_MIN_CHUNK_SIZE` 愈小愈適合短句密集書。
 
 ---
 
-## 7. 書籍格式（MarkItDown）
+## 7. PDF 解析：MarkItDown vs MinerU
+
+入口：`ingest/converter.py`（`EXTRACT_BACKEND`）、`ingest/mineru_extract.py`。
+
+| 維度 | **MarkItDown**（預設） | **MinerU**（`EXTRACT_BACKEND=mineru`） |
+|------|------------------------|----------------------------------------|
+| **定位** | 輕量「萬用轉 MD」Python 庫 | 偏重 **PDF / 掃描 / 版面** 的解析管線（CLI） |
+| **安裝** | 主依賴已有 | `uv sync --group mineru`（釘 `mineru>=2.1.9,<3`；3.x 架構不同）；模型約 1–2 GB |
+| **支援格式** | PDF、DOCX、PPTX、XLSX、HTML、EPUB* 等 | 本專案：PDF、PNG/JPG/WebP；Office 仍走 MarkItDown |
+| **輸出結構** | 常是**純文字行**，章節未必有 `#` | 常產 **Markdown 標題、區塊** 較完整 |
+| **掃描 PDF / OCR** | 依底層解析，複雜版面易糊 | 專為難 PDF 設計，表格/多欄較有機會較好 |
+| **速度 / 資源** | 快、輕 | 慢（整本 PDF 常 10–30 分鐘 CPU）、RAM 2–4 GB+；僅 **入庫時** 跑 |
+| **失敗時** | 直接報錯 | **自動 fallback MarkItDown**（`converter.py`） |
+| **和 chunker 搭配** | 配 `CHUNKER_MODE=native` 較順 | 有 `#` 標題時語意切也受益；預設 `semantic` 即可 |
+
+**什麼時候換 MinerU？**
+
+- 電子 PDF 但 MarkItDown 轉出來章節亂、表格碎、缺標題  
+- 掃描版 / 圖片型 PDF，MarkItDown 幾乎不可用  
+- 願意多花時間換更好結構，再重建索引 + eval 對照  
+
+**什麼時候留 MarkItDown？**
+
+- 學習主線、快速迭代 ingest → chunk → eval  
+- DOCX / 已有 `.md` 的書（MinerU 不處理這些）  
+- 本機沒裝 MinerU 或不想拉重型依賴  
+
+```bash
+# 一次性：安裝 + 下載模型（-s 必填，否則 CLI 會卡在互動選單）
+uv sync --group mineru
+uv run mineru-models-download -m pipeline -s huggingface
+
+# 預設
+EXTRACT_BACKEND=markitdown uv run python scripts/build_index.py
+
+# 試 MinerU（PDF；Mac 建議 MINERU_DEVICE=cpu）
+EXTRACT_BACKEND=mineru uv run python scripts/build_index.py --book naval-almanac --force
+```
+
+### Extract vs Chunk：為何預設 MarkItDown，MinerU 仍值得保留？
+
+**不只本地資源。** 預設 MarkItDown 還因為：迭代快、多格式（DOCX/MD）、依賴輕、golden 邊際收益（納瓦尔 60%→70%）不值得每次 rebuild 都付成本。
+
+| 層 | 職責 | MinerU 能取代自研嗎？ |
+|----|------|----------------------|
+| **Extract** | PDF → 結構化 MD（`#`、區塊、表格） | ✅ 難 PDF 時很適合；可接現成 MarkdownHeaderSplitter 等 |
+| **Chunk** | 檢索友好邊界 + `chapter`/`heading` metadata | ❌ 仍要選策略：`semantic`（句相似度）≠ 按標題切 |
+
+- **MinerU 的價值**：標準化 **上游 parse**，減少自研「從亂 PDF 猜章節」；納瓦尔實測 **401/401** 有章節標籤（MarkItDown 463/464）。
+- **自研 chunker 的價值**：`semantic` 針對短句金句體；`native` 給長篇章節書；boilerplate 過濾、eval 驅動調參——現成 tool chain 不會自動幫你做。
+- **務實組合**：`MarkItDown` 日常迭代；懷疑 PDF 結構拖累檢索時 `MinerU --force` + `eval.py --golden` 對照。Chunk 兩邊共用 `CHUNKER_MODE=semantic`（預設）。
+
+```mermaid
+flowchart LR
+    subgraph extract [Extract 可選]
+        PDF[PDF] --> MD1[MarkItDown 預設]
+        PDF --> MD2[MinerU 可選]
+        MD2 -.失敗.-> MD1
+        Office[DOCX/MD] --> MD1
+    end
+    MD1 --> Chunk
+    MD2 --> Chunk
+    subgraph chunk [Chunk 自研]
+        Chunk[semantic / native]
+    end
+    Chunk --> Index[Qdrant + BM25]
+```
+
+### 問答：檢索 fallback + ingest 提示
+
+LangGraph `retrieve` 節點（`core/retrieve_fallback.py`）：
+
+1. **v1** — 預設 `hybrid_rerank`（依 `RETRIEVAL_STRATEGY` / env）  
+2. **v2** — 仍低分 → `top_k × 2`（上限 `RETRIEVAL_MAX_TOP_K`），維持 rerank  
+3. **v3** — `hybrid`（無 rerank）  
+4. **v4** — `vector`（最後手段；若起點已是 `vector` 則只加寬 top_k）
+
+`chat /debug` 可看每輪 `strategy / top1 / n`。檢索信心低且該書為 **MarkItDown PDF** 時，回應附 `ingest_hint` 建議 MinerU rebuild。`eval.py --golden` 通過率 < `GOLDEN_PASS_WARN_THRESHOLD` 時亦印相同建議。
+
+---
+
+## 8. 書籍格式總覽
 
 | 類型 | 處理 |
 |------|------|
-| PDF, DOCX, PPTX, XLSX, HTML, EPUB* | `MarkItDown.convert()` → `outputs/<stem>.md` |
+| PDF, DOCX, PPTX, XLSX, HTML, EPUB* | MarkItDown 或 MinerU（見 §7）→ `outputs/<stem>.md` |
 | `.md` / `.markdown` | 複製到 outputs + `normalize_md_text` |
 
 \* EPUB 依 MarkItDown / 系統依賴而定；失敗時先改 PDF 或自行轉 MD。
 
-入口：`ingest/converter.py`、`ingest/formats.py`。
+相關：`ingest/formats.py`。
 
 ---
 
-## 8. 常見自問自答（QA）
+## 9. 常見自問自答（QA）
 
 **Q: 索引建了，為什麼還說「沒有相關信息」？**  
 A: 可能 (1) 檢索到致謝/版權垃圾段 (2) top_k 太少 (3) LLM 太嚴。看 chat 的引用來源是否偏題。
@@ -142,7 +255,7 @@ A: `FileNotFoundError` 時 **fallback 純向量**（`core/hybrid.py`）。檔名
 
 ---
 
-## 9. 容易搞混的細節
+## 10. 容易搞混的細節
 
 | 常以為 | 實際 |
 |--------|------|
@@ -150,13 +263,13 @@ A: `FileNotFoundError` 時 **fallback 純向量**（`core/hybrid.py`）。檔名
 | top_k 是 RRF 分數 | **top_k** = 送進 LLM 的段落**個數**；**RRF** 只用在 hybrid **排名合併** |
 | book_id 隨機產生 | 來自 `sample_books` **檔名 slug**（如 `naval-almanac`） |
 | 查詢字串要加 `query:` 是 API 標記 | **BGE** 訓練慣例：問句加前綴、書中 chunk 不加；影響檢索相似度 |
-| eval 評整段問答好不好 | **只評檢索**（固定題 + 相似度 + 人工看 top-k）；生成好壞另用手動看引用是否 grounded |
+| eval 評整段問答好不好 | **只評檢索**。互動 `eval.py`；金標 `eval.py --golden` + `eval/test_cases.json`（`must_contain_any`）；生成另看 chat 引用 |
 | chunk overlap 是算 chunk 之間相似度 | **overlap** = 相鄰分塊**重疊字數**，避免句斷在邊界 |
 | overview 問題 top_k 可到上千 | 本專案 overview 約 **≥8**，依 `retrieval_top_k` 規則 |
 
 ---
 
-## 10. 實驗日誌
+## 11. 實驗日誌
 
 | 日期 | 做了什麼 | 結果 |
 |------|----------|------|

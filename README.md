@@ -21,7 +21,8 @@
 
 | 類型 | 副檔名 | 處理方式 |
 |------|--------|----------|
-| MarkItDown | `.pdf` `.epub` `.docx` `.doc` `.html` `.htm` `.pptx` `.xlsx` | 轉成 `outputs/<檔名>.md` |
+| MarkItDown（預設） | `.pdf` `.epub` `.docx` … | 轉成 `outputs/<檔名>.md` |
+| MinerU（可選） | `.pdf` 等 | `.env` 設 `EXTRACT_BACKEND=mineru` + `uv sync --group mineru` |
 | 原生 Markdown | `.md` `.markdown` | 複製到 `outputs/` 並做輕量清理 |
 
 EPUB 等若轉檔失敗，可先改成 PDF 或自行準備 `.md` 放入 `sample_books/`。
@@ -37,7 +38,7 @@ Clone 後已有 **`sample_books/naval-almanac.pdf`**，`book_id` 固定為 **`na
 ```bash
 brew install uv ollama
 cd book-spirit
-uv sync
+uv sync --group langchain   # chat 預設 LangGraph 問答
 ollama pull qwen2.5:7b-instruct-q4_K_M
 ollama serve   # 另開終端
 
@@ -95,7 +96,7 @@ flowchart LR
 
 查詢時會加前綴 `query:`（BGE 建議用法，見 `core/config.py`）。
 
-### 向量檢索（`retrieval_strategy: vector`，預設）
+### 向量檢索（`retrieval_strategy: vector`）
 
 只靠 embedding 相似度排序，適合**換句話說的語意搜尋**。
 
@@ -109,9 +110,9 @@ flowchart LR
 **向量 + BM25 各搜一輪**，用 **RRF** 合併排名（公式與直覺見 [docs/LEARNING.md §3](docs/LEARNING.md#3-rrf-是什麼你寫的-rpf-多半指這個)）。  
 環境變數也可設 `RETRIEVAL_MODE=hybrid`。
 
-### Rerank（`hybrid_rerank` 或 `use_rerank: true`）
+### Rerank（`hybrid_rerank`，**預設**）
 
-Hybrid 先抓約 15 條候選，再用 **cross-encoder**（`bge-reranker-base`）對「問題–段落」精排，最後只留 `top_k` 條。更準、更慢。
+Hybrid 先抓約 15 條候選，再用 **cross-encoder**（`bge-reranker-base`）對「問題–段落」精排，最後只留 `top_k` 條。更準、較慢；低分時 fallback 會先加寬 top_k，再降級 hybrid → vector。
 
 ### top_k
 
@@ -147,7 +148,7 @@ Hybrid 先抓約 15 條候選，再用 **cross-encoder**（`bge-reranker-base`�
 - §6 為何自研 **chunker**、現成 splitter 差在哪  
 - §8 常見 **QA**
 
-預設分塊：`chunk_size=512`、`overlap=64`（`ingest/chunker.py`）。
+預設分塊：**語意切**（`CHUNKER_MODE=semantic`，`SEMANTIC_MIN_CHUNK_SIZE=128`）；上限 `chunk_size=512`、`overlap=64`。長篇章節書可改 `CHUNKER_MODE=native` 後 `--force` 重建（見 [LEARNING.md §6](docs/LEARNING.md)）。
 
 ---
 
@@ -175,7 +176,7 @@ curl -s -X POST http://127.0.0.1:8000/search \
   -H "Content-Type: application/json" \
   -d '{
     "question": "什麼是專長？",
-    "retrieval_strategy": "vector",
+    "retrieval_strategy": "hybrid_rerank",
     "top_k": 3
   }' | python -m json.tool
 ```

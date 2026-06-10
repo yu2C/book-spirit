@@ -9,7 +9,8 @@
 
 ```bash
 brew install uv ollama
-uv sync
+uv sync --group langchain   # chat 預設 LangGraph
+# 可選 MinerU 解析：uv sync --group mineru，.env 設 EXTRACT_BACKEND=mineru
 ollama pull qwen2.5:7b-instruct-q4_K_M
 ollama serve   # 另開終端
 

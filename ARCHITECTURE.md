@@ -46,24 +46,36 @@ flowchart TB
 
 | 步驟 | 模組 | 說明 |
 |------|------|------|
-| Extract | `ingest/converter.py` | MarkItDown + 原生 `.md`（見 `ingest/formats.py`） |
-| Transform | `ingest/chunker.py` | 自研分塊（中文章節、裁後記） |
+| Extract | `ingest/converter.py` | MarkItDown（預設）或 MinerU PDF（`EXTRACT_BACKEND`） |
+| Transform | `ingest/chunker.py` | `semantic`（預設）/ `native`；中文章節 metadata |
 | Load | `ingest/indexer.py` | BGE → `book_<id>` collection + `bm25_<id>.json` |
 
 入口：`scripts/build_index.py`（`--all` / `--book` / `--list` / `--archive`）
 
 ---
 
-## 問答路徑
+## 問答路徑（LangGraph，預設）
 
-```
-問題 → [可選 Query Planner] → 檢索(top_k) → 組 prompt → Ollama → 回答+sources
-                              ↑
-                    vector | hybrid | hybrid_rerank
+```mermaid
+flowchart TD
+    Start([問題]) --> prepare
+    prepare["prepare\nmemory + query planner\n書籍 scope / top_k"]
+    prepare --> retrieve
+    retrieve["retrieve + fallback ladder\nv1: hybrid_rerank\nv2: ↑top_k rerank\nv3: hybrid → vector"]
+    retrieve -->|top1 ≥ 門檻 且有 chunks| generate
+    retrieve -->|仍無 chunks / 封存書| empty
+    generate["generate\nbuild_prompt → Ollama"]
+    empty["empty + ingest_hint?\nMarkItDown PDF 低分時建議 MinerU"]
+    generate --> End([回答 + sources + retrieval_debug])
+    empty --> End
 ```
 
-實作：`core/pipeline.py`（`NativeRAG`）。  
-API：`api/app.py`。終端：`scripts/chat.py`。
+`index_meta` 每書記錄 `extract_backend`、`chunker_mode`；`eval.py --golden` 通過率偏低且為 MarkItDown PDF 時印 MinerU 重建建議。
+
+節點實作：`integrations/langgraph.py`；`prepare` 共用 `core/ask_flow.py`。  
+對照 backend：`NativeRAG`（`core/pipeline.py`）。API / chat：`RAG_BACKEND=native|langchain|langgraph`。
+
+入庫解析：`EXTRACT_BACKEND=markitdown`（預設）或 `mineru`（`ingest/mineru_extract.py`）。
 
 ---
 
