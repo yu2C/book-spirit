@@ -25,13 +25,6 @@ from qdrant_client.models import (
 from sentence_transformers import SentenceTransformer
 
 from core.collections import LEGACY_COLLECTION, collection_name_for_book, point_count_for_book
-from core.index_catalog import (
-    bm25_path,
-    index_meta_path,
-    list_indexed_book_ids,
-    load_index_meta,
-    load_library_meta_optional,
-)
 from core.config import (
     CHUNKER_MODE,
     COLLECTION_NAME,
@@ -41,19 +34,15 @@ from core.config import (
     QDRANT_URL,
     create_qdrant_client,
 )
-
-# Backward-compatible; prefer index_meta_path() at runtime.
-INDEX_META_FILE = index_meta_path()
+from core.index_catalog import bm25_path, index_meta_path, load_library_meta_optional
 from ingest.books_registry import (
     STATUS_ARCHIVED,
     STATUS_INDEXED,
     BookEntry,
     ensure_entry_for_source,
     get_book,
-    load_registry,
     md_path_for_source,
     set_book_status,
-    slug_from_source,
     upsert_registry_entry,
 )
 from ingest.chunker import (
@@ -62,6 +51,9 @@ from ingest.chunker import (
     Chunk,
     chunk_markdown,
 )
+
+# Backward-compatible; prefer index_meta_path() at runtime.
+INDEX_META_FILE = index_meta_path()
 
 _POINT_NS = uuid.UUID("a3f2c8e1-4b5d-4e9a-9c7d-1e2f3a4b5c6d")
 

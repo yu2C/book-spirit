@@ -3,13 +3,16 @@
 [![CI](https://github.com/yu2C/book-spirit/actions/workflows/ci.yml/badge.svg)](https://github.com/yu2C/book-spirit/actions/workflows/ci.yml)
 
 Side project：**用一本書練 RAG**——入庫、檢索、帶引用問答、把心得存 SQLite。  
-不是產品；目的是搞懂各層怎麼接（面試時可當 toy case 講）。
+不是產品；目的是搞懂各層怎麼接。
+
+**給審閱者：** [docs/REVIEW.md](docs/REVIEW.md)（5 分鐘閱讀路徑、重點檔案、驗證指令）
 
 | 文件 | 內容 |
 |------|------|
+| [docs/REVIEW.md](docs/REVIEW.md) | 審閱指南、履歷描述參考 |
 | 本檔 | 安裝、名詞、API |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 模組與資料流 |
-| [docs/LEARNING.md](docs/LEARNING.md) | 技術取捨（Qdrant、hybrid、chunker） |
+| [docs/LEARNING.md](docs/LEARNING.md) | 學習筆記（名詞、向量庫、取捨） |
 | [QUICKSTART_READING.md](QUICKSTART_READING.md) | `chat.py` 指令 |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker / CI（可選） |
 

@@ -8,7 +8,6 @@ import requests
 from sentence_transformers import SentenceTransformer
 
 from core.ask_orchestrator import run_ask
-from core.library_scope import BOOK_SCOPE_ALL
 from core.collections import LEGACY_COLLECTION, vector_search_targets
 from core.config import (
     DEFAULT_TOP_K,
@@ -27,6 +26,7 @@ from core.config import (
     build_qdrant_filter,
     create_qdrant_client,
 )
+from core.library_scope import BOOK_SCOPE_ALL
 from core.retrieval import (
     expand_retrieval_queries,
     filter_boilerplate_docs,

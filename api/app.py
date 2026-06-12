@@ -14,9 +14,7 @@ from pydantic import BaseModel
 from api.query_log import QueryLogger
 from core.backends import build_rag_backend
 from core.config import (
-    BACKEND_LANGCHAIN,
     BACKEND_LANGGRAPH,
-    BACKEND_NATIVE,
     DEFAULT_TOP_K,
     EMBEDDING_MODEL,
     OLLAMA_MODEL,

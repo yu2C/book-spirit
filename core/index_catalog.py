@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from core.config import COLLECTION_NAME
 
+
 def index_meta_path() -> Path:
     from core.config import QDRANT_PATH
 

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from core.books import BOOK_SCOPE_ALL, resolve_ask_context
+from core.library_scope import BOOK_SCOPE_ALL, resolve_ask_context
 from ingest.books_registry import slug_from_pdf
 
 

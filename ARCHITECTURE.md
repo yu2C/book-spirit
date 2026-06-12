@@ -1,5 +1,6 @@
 # Book Spirit — 架構
 
+> 審閱指南：[docs/REVIEW.md](docs/REVIEW.md)  
 > 安裝與快速開始：[README.md](README.md)  
 > 技術取捨筆記：[docs/LEARNING.md](docs/LEARNING.md)  
 > Chat 指令：[QUICKSTART_READING.md](QUICKSTART_READING.md)
@@ -84,8 +85,6 @@ book-spirit/
 ├── integrations/            # langchain / langgraph 薄包裝
 └── scripts/                 # build_index, chat, eval
 ```
-
-`core/books.py`、`core/chat_books.py` 為相容 re-export，新程式請用 `library_scope`。
 
 ---
 

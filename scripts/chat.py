@@ -60,7 +60,11 @@ def _prompt() -> str:
 
 
 from core.backends import build_rag_backend  # noqa: E402
-from core.chat_books import format_scope_label, indexed_books_menu, resolve_book_arg  # noqa: E402
+from core.library_scope import (  # noqa: E402
+    format_scope_label,
+    indexed_books_menu,
+    resolve_book_arg,
+)
 from memory.store import ReadingMemory  # noqa: E402
 
 SLASH_COMMANDS = (
@@ -95,8 +99,8 @@ SLASH_HELP = """
 
 
 def _default_book_id() -> str:
-    from ingest.books_registry import list_pdf_books
     from core.index_catalog import list_indexed_book_ids
+    from ingest.books_registry import list_pdf_books
 
     indexed = list_indexed_book_ids()
     if indexed:

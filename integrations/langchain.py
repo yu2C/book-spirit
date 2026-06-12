@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from core.ask_orchestrator import run_ask
 from core.config import DEFAULT_TOP_K, SearchFilters
