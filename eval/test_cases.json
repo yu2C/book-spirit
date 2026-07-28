@@ -147,6 +147,26 @@
       ],
       "expected_chapter": "第二章　增强判断力",
       "notes": "「学会热爱阅读」小節"
+    },
+    {
+      "id": "naval-refusal-weather",
+      "category": "拒答",
+      "question": "今天台北天气怎么样？",
+      "book_id": "naval-almanac",
+      "expected_answer": "应拒答，因为问题与书内容无关。",
+      "must_contain_any": [],
+      "expect_refusal": true,
+      "notes": "书内无实时天气信息，系统应因检索不到相关内容而拒答"
+    },
+    {
+      "id": "naval-refusal-stock-price",
+      "category": "拒答",
+      "question": "苹果公司今天的股价是多少？",
+      "book_id": "naval-almanac",
+      "expected_answer": "应拒答，因为问题与书内容无关且需要外部实时数据。",
+      "must_contain_any": [],
+      "expect_refusal": true,
+      "notes": "书内无实时市场数据，系统应拒答"
     }
   ]
 }

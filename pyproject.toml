@@ -22,6 +22,7 @@ test = [
     "pytest>=8.0.0",
     "httpx>=0.25.0,<0.28",
     "ruff>=0.6.0",
+    "selenium>=4.23.0,<5",
     "fastapi>=0.104.1",
     "pydantic>=2.5.0",
     "requests>=2.31.0",
@@ -44,6 +45,9 @@ package = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "e2e: browser-based end-to-end tests",
+]
 
 [tool.ruff]
 line-length = 100

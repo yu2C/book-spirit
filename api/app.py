@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
+from pathlib import Path
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from api.query_log import QueryLogger
 from core.backends import build_rag_backend
 from core.config import (
-    BACKEND_LANGGRAPH,
+    BACKEND_NATIVE,
     DEFAULT_TOP_K,
     EMBEDDING_MODEL,
     OLLAMA_MODEL,
@@ -29,15 +32,16 @@ from memory.store import ReadingMemory
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-DEFAULT_BACKEND = os.getenv("RAG_BACKEND", BACKEND_LANGGRAPH)
+DEFAULT_BACKEND = os.getenv("RAG_BACKEND", BACKEND_NATIVE)
 SKIP_INIT = os.getenv("RAG_SKIP_INIT") == "1"
+WEB_INDEX = Path(__file__).resolve().parent / "static" / "index.html"
 
 
 class AskRequest(BaseModel):
     question: str
     top_k: int = DEFAULT_TOP_K
     temperature: float = 0.7
-    backend: str = BACKEND_LANGGRAPH
+    backend: str = DEFAULT_BACKEND
     chapter: str | None = None
     heading: str | None = None
     book_title: str | None = None
@@ -87,7 +91,7 @@ class ProfileResponse(BaseModel):
 class SearchRequest(BaseModel):
     question: str
     top_k: int = DEFAULT_TOP_K
-    backend: str = BACKEND_LANGGRAPH
+    backend: str = DEFAULT_BACKEND
     chapter: str | None = None
     heading: str | None = None
     book_title: str | None = None
@@ -118,6 +122,7 @@ class SearchResponse(BaseModel):
     retrieval_mode: str
     use_rerank: bool
     retrieval_strategy: str
+    stage_timings: dict[str, float]
 
 
 class AskResponse(BaseModel):
@@ -128,6 +133,8 @@ class AskResponse(BaseModel):
     llm_time: float
     backend: str
     memory_notes_used: list[NoteResponse] = []
+    stage_timings: dict[str, float]
+    token_usage: dict[str, int | float | None] = {}
 
 
 class HealthResponse(BaseModel):
@@ -213,6 +220,70 @@ def filters_to_dict(filters: SearchFilters | None) -> dict[str, str | None] | No
         "book_title": filters.book_title,
         "book_id": filters.book_id,
     }
+
+
+def emit_request_log(
+    *,
+    endpoint: str,
+    backend: str,
+    question: str,
+    top_k: int,
+    stage_timings: dict[str, float],
+    filters: dict[str, str | None] | None,
+    retrieval_mode: str,
+    use_rerank: bool,
+    sources_count: int,
+    low_confidence: bool = False,
+    refused: bool = False,
+    token_usage: dict[str, int | float | None] | None = None,
+) -> None:
+    logger.info(
+        json.dumps(
+            {
+                "event": "rag_request",
+                "endpoint": endpoint,
+                "backend": backend,
+                "question": question,
+                "top_k": top_k,
+                "filters": filters,
+                "retrieval_mode": retrieval_mode,
+                "use_rerank": use_rerank,
+                "sources_count": sources_count,
+                "low_confidence": low_confidence,
+                "refused": refused,
+                "stage_timings": stage_timings,
+                "token_usage": token_usage,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+
+def emit_error_log(
+    *,
+    endpoint: str,
+    backend: str | None,
+    question: str | None,
+    detail: str,
+    status_code: int,
+    stage: str,
+) -> None:
+    logger.error(
+        json.dumps(
+            {
+                "event": "rag_error",
+                "endpoint": endpoint,
+                "backend": backend,
+                "question": question,
+                "detail": detail,
+                "status_code": status_code,
+                "stage": stage,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
 
 
 def resolve_retrieval_from_request(
@@ -327,6 +398,8 @@ def log_query_async(
     retrieval_mode: str,
     use_rerank: bool,
     filters: dict[str, str | None] | None,
+    stage_timings: dict[str, float] | None,
+    token_usage: dict[str, int | float | None] | None = None,
 ):
     query_logger.log_query(
         endpoint=endpoint,
@@ -338,6 +411,8 @@ def log_query_async(
         retrieval_mode=retrieval_mode,
         use_rerank=use_rerank,
         filters=filters,
+        stage_timings=stage_timings,
+        token_usage=token_usage,
     )
 
 
@@ -347,6 +422,7 @@ async def root():
         "name": "Book Spirit API",
         "version": "1.2.0",
         "docs": "/docs",
+        "demo": "/demo",
         "endpoints": {
             "health": "/health",
             "search": "/search",
@@ -355,6 +431,12 @@ async def root():
         "backends": list(backends.keys()),
         "default_backend": DEFAULT_BACKEND,
     }
+
+
+@app.get("/demo", include_in_schema=False)
+async def demo():
+    """Thin browser UI over the same /search and /ask APIs used by clients."""
+    return FileResponse(WEB_INDEX)
 
 
 @app.get("/health", tags=["基本"])
@@ -407,6 +489,7 @@ async def search(request: SearchRequest, background_tasks: BackgroundTasks):
     start = time.time()
 
     try:
+        retrieve_start = time.time()
         docs = call_retrieve(
             backend,
             request.question,
@@ -416,9 +499,14 @@ async def search(request: SearchRequest, background_tasks: BackgroundTasks):
             use_rerank,
             book_id=request.book_id,
         )
+        retrieve_elapsed = time.time() - retrieve_start
         sources = [doc_to_source(doc) for doc in docs]
         elapsed = time.time() - start
         result_ids = extract_result_ids(sources)
+        stage_timings = {
+            "retrieve_seconds": retrieve_elapsed,
+            "total_seconds": elapsed,
+        }
 
         background_tasks.add_task(
             log_query_async,
@@ -431,6 +519,20 @@ async def search(request: SearchRequest, background_tasks: BackgroundTasks):
             retrieval_mode,
             use_rerank,
             filters_to_dict(filters),
+            stage_timings,
+            None,
+        )
+        emit_request_log(
+            endpoint="search",
+            backend=request.backend,
+            question=request.question,
+            top_k=request.top_k,
+            stage_timings=stage_timings,
+            filters=filters_to_dict(filters),
+            retrieval_mode=retrieval_mode,
+            use_rerank=use_rerank,
+            sources_count=len(sources),
+            token_usage=None,
         )
 
         return SearchResponse(
@@ -442,11 +544,19 @@ async def search(request: SearchRequest, background_tasks: BackgroundTasks):
             retrieval_mode=retrieval_mode,
             use_rerank=use_rerank,
             retrieval_strategy=retrieval_strategy,
+            stage_timings=stage_timings,
         )
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("搜尋失敗: %s", exc)
+        emit_error_log(
+            endpoint="search",
+            backend=request.backend,
+            question=request.question,
+            detail=str(exc),
+            status_code=500,
+            stage="retrieve",
+        )
         raise HTTPException(status_code=500, detail=f"搜尋失敗: {exc}") from exc
 
 
@@ -456,6 +566,14 @@ async def ask(request: AskRequest, background_tasks: BackgroundTasks):
     filters = filters_from_request(request)
     retrieval_mode, use_rerank, retrieval_strategy = resolve_retrieval_from_request(request)
     if not check_ollama(backend):
+        emit_error_log(
+            endpoint="ask",
+            backend=request.backend,
+            question=request.question,
+            detail="Ollama 未運行。請執行：ollama serve",
+            status_code=503,
+            stage="llm_healthcheck",
+        )
         raise HTTPException(
             status_code=503,
             detail="Ollama 未運行。請執行：ollama serve",
@@ -486,9 +604,25 @@ async def ask(request: AskRequest, background_tasks: BackgroundTasks):
             retrieval_mode,
             use_rerank,
             filters_to_dict(filters),
+            result.get("stage_timings", {}),
+            result.get("token_usage", {}),
         )
 
         memory_used = [note_to_response(n) for n in result.get("memory_notes_used", [])]
+        emit_request_log(
+            endpoint="ask",
+            backend=result.get("backend", request.backend),
+            question=request.question,
+            top_k=request.top_k,
+            stage_timings=result.get("stage_timings", {}),
+            filters=filters_to_dict(filters),
+            retrieval_mode=retrieval_mode,
+            use_rerank=use_rerank,
+            sources_count=len(result.get("sources", [])),
+            low_confidence=bool((result.get("retrieval_debug") or {}).get("low_confidence")),
+            refused=str(result.get("answer", "")).startswith("❌"),
+            token_usage=result.get("token_usage", {}),
+        )
 
         if (
             request.save_note
@@ -515,9 +649,18 @@ async def ask(request: AskRequest, background_tasks: BackgroundTasks):
             time_elapsed=result["time_elapsed"],
             llm_time=result["llm_time"],
             backend=result.get("backend", request.backend),
+            stage_timings=result.get("stage_timings", {}),
+            token_usage=result.get("token_usage", {}),
         )
     except Exception as exc:
-        logger.error("處理請求失敗: %s", exc)
+        emit_error_log(
+            endpoint="ask",
+            backend=request.backend,
+            question=request.question,
+            detail=str(exc),
+            status_code=500,
+            stage="ask",
+        )
         raise HTTPException(status_code=500, detail=f"處理失敗: {exc}") from exc
 
 

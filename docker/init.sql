@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS query_logs (
     retrieval_mode VARCHAR(32),
     use_rerank BOOLEAN,
     filters JSONB,
+    stage_timings JSONB,
+    token_usage JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

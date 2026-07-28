@@ -87,6 +87,7 @@ class NativeRAG:
         self.ollama_model = ollama_model
         self.ollama_url = ollama_url
         self.ollama_endpoint = f"{ollama_url}/api/generate"
+        self.last_llm_usage: Dict[str, Any] | None = None
 
     def check_ollama_health(self) -> bool:
         try:
@@ -241,6 +242,7 @@ class NativeRAG:
         prompt: str,
         temperature: float = 0.7,
     ) -> str:
+        self.last_llm_usage = None
         payload = {
             "model": self.ollama_model,
             "prompt": prompt,
@@ -255,13 +257,26 @@ class NativeRAG:
                 timeout=120,
             )
             response.raise_for_status()
-            return response.json().get("response", "")
+            data = response.json()
+            prompt_tokens = data.get("prompt_eval_count")
+            completion_tokens = data.get("eval_count")
+            self.last_llm_usage = {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": (prompt_tokens or 0) + (completion_tokens or 0),
+                "prompt_eval_duration_ns": data.get("prompt_eval_duration"),
+                "eval_duration_ns": data.get("eval_duration"),
+            }
+            return data.get("response", "")
         except requests.exceptions.Timeout:
             return "❌ 生成超時，請重試"
         except requests.exceptions.ConnectionError:
             return "❌ 無法連接到 Ollama。請確保執行了：ollama serve"
         except requests.RequestException as exc:
             return f"❌ 生成失敗: {exc}"
+
+    def get_last_llm_usage(self) -> Dict[str, Any] | None:
+        return self.last_llm_usage
 
     def ask(
         self,

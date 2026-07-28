@@ -233,6 +233,7 @@ def run_golden_tests(
     use_rerank: bool = False,
     top_k: int = 3,
     cases_path: str | None = None,
+    judge_answers: bool = False,
 ):
     """用 eval/test_cases.json 自動評檢索（must_contain_any，抗 chunk 重建）。"""
     if not QDRANT_PATH.exists() or not index_meta_path().exists():
@@ -255,6 +256,8 @@ def run_golden_tests(
     print(f"   chunker={CHUNKER_MODE} | 檢索: {mode} | rerank: {'on' if use_rerank else 'off'}")
     print(f"🏅 金標題數: {len(cases)}（eval/test_cases.json）")
     print(f"   規則: top-{top_k} 任一块含 must_contain_any → pass")
+    if judge_answers:
+        print("   answer judge: on（需 Ollama；以 expected_answer 相似度做輕量基線）")
 
     rag = NativeRAG()
     scored: List[Dict] = []
@@ -272,7 +275,18 @@ def run_golden_tests(
             use_rerank=use_rerank,
             scope_book_id=book_id,
         ).documents
-        row = score_case(case, results, top_k=top_k)
+        answer = None
+        if judge_answers:
+            ask_result = rag.ask(
+                case["question"],
+                top_k=top_k,
+                filters=filters,
+                mode=mode,
+                use_rerank=use_rerank,
+                book_id=book_id,
+            )
+            answer = ask_result.get("answer")
+        row = score_case(case, results, top_k=top_k, answer=answer)
         scored.append(row)
         mark = "✅" if row["pass"] else "❌"
         print(f"\n{mark} [{case.get('category')}] {case['question']}")
@@ -284,7 +298,14 @@ def run_golden_tests(
         )
         if row["chapter_ok"] is not None:
             print(f"  chapter_ok={row['chapter_ok']}", end="")
-        print()
+        if row.get("answer_evaluated"):
+            print(
+                f"  answer_pass={row['answer_pass']}  answer_score={row['answer_score']:.2f}"
+                if row.get("answer_score") is not None
+                else f"  answer_pass={row['answer_pass']}"
+            )
+        else:
+            print()
         for pr in row["per_rank"]:
             m = "✓" if pr["matched"] else "·"
             print(
@@ -296,6 +317,18 @@ def run_golden_tests(
     print("📊 金標總結")
     print(f"   通過: {summary['passed']}/{summary['total']} ({summary['pass_rate'] * 100:.0f}%)")
     print(f"   平均 precision@{top_k}: {summary['avg_precision_at_k']:.2f}")
+    print(f"   平均 MRR: {summary['avg_mrr']:.2f}")
+    if summary['refusal_total']:
+        print(
+            f"   拒答通過: {summary['refusal_passed']}/{summary['refusal_total']} "
+            f"({summary['refusal_rate'] * 100:.0f}%)"
+        )
+    if summary["answer_total"]:
+        print(
+            f"   answer baseline: {summary['answer_passed']}/{summary['answer_total']} "
+            f"({summary['answer_pass_rate'] * 100:.0f}%)"
+        )
+        print(f"   hallucination baseline: {summary['hallucination_rate'] * 100:.0f}%")
 
     from core.ingest_hints import golden_ingest_warnings
 
@@ -433,6 +466,11 @@ def main():
         help="是否 rerank（未指定時依 env；預設 on）",
     )
     parser.add_argument(
+        "--judge-answers",
+        action="store_true",
+        help="golden 時連 ask 一起跑，做 answer-level 輕量基線（需 Ollama）",
+    )
+    parser.add_argument(
         "--strategy",
         choices=("vector", "hybrid", "hybrid_rerank"),
         default=None,
@@ -462,6 +500,7 @@ def main():
             mode=mode,
             use_rerank=use_rerank,
             cases_path=args.cases,
+            judge_answers=args.judge_answers,
         )
         return
 

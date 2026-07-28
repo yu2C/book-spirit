@@ -15,6 +15,7 @@ Side project：**用一本書練 RAG**——入庫、檢索、帶引用問答、
 | [docs/LEARNING.md](docs/LEARNING.md) | 學習筆記（名詞、向量庫、取捨） |
 | [QUICKSTART_READING.md](QUICKSTART_READING.md) | `chat.py` 指令 |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Docker / CI（可選） |
+| [docs/RELEASE_CHECKS.md](docs/RELEASE_CHECKS.md) | 上線前五項檢查（功能 / 性能 / 質量 / 安全 / 成本） |
 
 ---
 
@@ -82,6 +83,15 @@ RRF、為何選 Qdrant、chunker 對照 → [docs/LEARNING.md](docs/LEARNING.md)
 ollama serve
 uv run python -m api
 # http://127.0.0.1:8000/docs
+# http://127.0.0.1:8000/demo  # 薄問答網站
+# http://127.0.0.1:8000/health
+```
+
+Docker Compose 啟動後可先檢查：
+
+```bash
+docker compose up -d
+curl http://127.0.0.1:8000/health
 ```
 
 純檢索（不呼叫 LLM）：
@@ -102,18 +112,29 @@ curl -s -X POST http://127.0.0.1:8000/ask \
 
 `book_id`、`chapter`、`retrieval_strategy` 等見 Swagger。
 
+`/ask` 回應現在也會帶 `token_usage`（來自 Ollama `prompt_eval_count` / `eval_count`）與 `stage_timings`，方便看成本與瓶頸。
+
 ---
 
 ## 評測
 
 ```bash
-uv run python scripts/eval.py --preview          # 人工看 top-k
-uv run python scripts/eval.py --golden           # 金標 eval/test_cases.json
+uv run python scripts/eval.py --preview                 # 人工看 top-k
+uv run python scripts/eval.py --golden                  # 金標 eval/test_cases.json
+uv run python scripts/eval.py --golden --judge-answers  # 連 answer 一起跑（需 Ollama）
 ```
 
-只評**檢索**，不評 LLM 會不會瞎編。
+預設只評**檢索**；加 `--judge-answers` 會再跑 `/ask` 生成，輸出 answer baseline 與 hallucination baseline（目前是 heuristic，不是最終真值裁判）。
 
 一鍵入庫 + 預覽：`bash etl/run_pipeline.sh`
+
+瀏覽器 smoke（網站 → `/search` → 來源證據；不啟動 Ollama）：
+
+```bash
+RUN_SELENIUM=1 RAG_SKIP_INIT=1 uv run pytest -q tests/e2e -m e2e
+```
+
+Selenium locator 收在 Page Object，測試斷言只比對來源數量與核心內容，不綁定 CSS 換行。
 
 ---
 

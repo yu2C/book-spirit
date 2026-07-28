@@ -15,7 +15,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
 
       - name: Install test dependencies
-        run: uv sync --only-group test --no-default-groups --frozen
+        run: uv sync --group test --no-default-groups --frozen
 
       - name: Ruff lint
         run: uv run ruff check core ingest memory eval api integrations scripts tests/
@@ -23,4 +23,29 @@ jobs:
       - name: Pytest
         env:
           RAG_SKIP_INIT: "1"
-        run: uv run pytest -q
+          CHUNKER_MODE: native
+          USE_RERANK: "false"
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: uv run pytest -q -m "not e2e"
+
+  selenium-smoke:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install test dependencies
+        run: uv sync --only-group test --no-default-groups --frozen
+
+      - name: Selenium smoke
+        env:
+          RAG_SKIP_INIT: "1"
+          RUN_SELENIUM: "1"
+          CHUNKER_MODE: native
+          USE_RERANK: "false"
+          HF_HUB_OFFLINE: "1"
+          TRANSFORMERS_OFFLINE: "1"
+        run: uv run pytest -q tests/e2e -m e2e

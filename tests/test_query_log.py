@@ -49,8 +49,12 @@ def test_log_query_when_enabled(mock_connect, query_log_module):
         retrieval_mode="hybrid",
         use_rerank=True,
         filters={"chapter": "第一部分", "heading": "專長", "book_title": None},
+        stage_timings={"retrieve_seconds": 0.12, "llm_seconds": 0.45},
+        token_usage={"prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168},
     )
     insert_sql = cur.execute.call_args_list[-1][0][0]
     assert "retrieval_mode" in insert_sql
     assert "use_rerank" in insert_sql
     assert "filters" in insert_sql
+    assert "stage_timings" in insert_sql
+    assert "token_usage" in insert_sql

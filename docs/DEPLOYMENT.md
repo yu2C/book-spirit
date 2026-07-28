@@ -24,10 +24,19 @@ docker compose up -d
 curl http://localhost:8000/health
 ```
 
-服務：`qdrant`（6333）+ `postgres`（5432）+ `api`（8000）。
+服務：`qdrant`（6333）+ `postgres`（5432）+ `api`（8000）。`api` 會用 `/health` 做容器健康檢查。
 
 設定 `DATABASE_URL` 後，`/search` 與 `/ask` 會非同步寫入 `query_logs`（與 SQLite 讀書筆記無關）。
 
 ## 環境變數
 
 見根目錄 `.env.example`：`NOTES_DB_PATH`、`RAG_BACKEND`、`RETRIEVAL_STRATEGY`、`DATABASE_URL` 等。
+
+## 上線前檢查
+
+工程化檢查清單見 [docs/RELEASE_CHECKS.md](RELEASE_CHECKS.md)：
+- 功能
+- 性能
+- 質量
+- 安全
+- 成本

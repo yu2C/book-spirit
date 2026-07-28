@@ -122,8 +122,10 @@ def build_ask_result(
     sources: List[Dict[str, Any]],
     llm_time: float,
     backend: str,
+    stage_timings: Optional[Dict[str, float]] = None,
     retrieval_debug: Optional[Dict[str, Any]] = None,
     ingest_hint: Optional[str] = None,
+    token_usage: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     result = {
         "question": prepared.question,
@@ -134,6 +136,8 @@ def build_ask_result(
         "time_elapsed": time.time() - prepared.start_time,
         "llm_time": llm_time,
         "backend": backend,
+        "stage_timings": stage_timings or {},
+        "token_usage": token_usage or {},
     }
     if retrieval_debug is not None:
         result["retrieval_debug"] = retrieval_debug

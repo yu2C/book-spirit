@@ -41,6 +41,8 @@ class QueryLogger:
                             retrieval_mode VARCHAR(32),
                             use_rerank BOOLEAN,
                             filters JSONB,
+                            stage_timings JSONB,
+                            token_usage JSONB,
                             created_at TIMESTAMPTZ DEFAULT NOW()
                         )
                         """
@@ -49,6 +51,8 @@ class QueryLogger:
                         ("retrieval_mode", "VARCHAR(32)"),
                         ("use_rerank", "BOOLEAN"),
                         ("filters", "JSONB"),
+                        ("stage_timings", "JSONB"),
+                        ("token_usage", "JSONB"),
                     ):
                         cur.execute(
                             f"ALTER TABLE query_logs ADD COLUMN IF NOT EXISTS {column} {col_type}"
@@ -81,6 +85,8 @@ class QueryLogger:
         retrieval_mode: Optional[str] = None,
         use_rerank: Optional[bool] = None,
         filters: Optional[Dict[str, Any]] = None,
+        stage_timings: Optional[Dict[str, float]] = None,
+        token_usage: Optional[Dict[str, Any]] = None,
     ) -> None:
         if not self.enabled:
             return
@@ -91,9 +97,9 @@ class QueryLogger:
                         """
                         INSERT INTO query_logs (
                             endpoint, question, backend, top_k, result_ids, latency_ms,
-                            retrieval_mode, use_rerank, filters
+                            retrieval_mode, use_rerank, filters, stage_timings, token_usage
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         (
                             endpoint,
@@ -105,6 +111,8 @@ class QueryLogger:
                             retrieval_mode,
                             use_rerank,
                             json.dumps(filters) if filters is not None else None,
+                            json.dumps(stage_timings) if stage_timings is not None else None,
+                            json.dumps(token_usage) if token_usage is not None else None,
                         ),
                     )
                 conn.commit()

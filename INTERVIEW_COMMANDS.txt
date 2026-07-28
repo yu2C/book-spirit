@@ -1,0 +1,209 @@
+Book Spirit SDET Interview Demo Commands
+=========================================
+
+使用方式
+--------
+請先在面試前於 Mac 執行一次所有指令，確認環境正常。
+面試當天建議 Windows 負責投影片、瀏覽器與畫面分享，Mac 負責 RAG server 與測試。
+
+
+一、Windows：確認可以 SSH 到 Mac
+--------------------------------
+
+PowerShell：
+
+    ssh <MAC_SSH_NAME>
+
+例如你的 SSH config 已經設定好 alias：
+
+    ssh mymac
+
+如果沒有 alias，格式通常是：
+
+    ssh <mac_username>@<mac_host>
+
+
+二、Windows：建立 SSH tunnel
+----------------------------
+
+這個指令會把 Windows 的 localhost:8000 轉到 Mac 的 localhost:8000：
+
+    ssh -L 8000:127.0.0.1:8000 <MAC_SSH_NAME>
+
+保持這個 terminal 不要關閉。
+
+之後 Windows 瀏覽器開啟：
+
+    http://127.0.0.1:8000/demo
+
+API 文件：
+
+    http://127.0.0.1:8000/docs
+
+健康檢查：
+
+    http://127.0.0.1:8000/health
+
+
+三、Mac：啟動 Book Spirit API server
+------------------------------------
+
+在 SSH terminal 中執行：
+
+    cd ~/gitclone/book-spirit
+
+面試 demo 建議使用 native backend：
+
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    CHUNKER_MODE=native \
+    USE_RERANK=false \
+    OLLAMA_MODEL=qwen3:4b-instruct-2507-q4_K_M \
+    uv run python -m api
+
+保持這個 terminal 不要關閉。
+
+注意：
+- 手動網站 demo 不要設定 RAG_SKIP_INIT=1。
+- 如果 Ollama 已經啟動，這個 API 可以使用真正的本機 RAG backend。
+- 如果只是展示網站介面，也可以使用既有啟動設定，不必現場更換模型。
+
+
+四、Windows：手動展示網站
+--------------------------
+
+瀏覽器開啟：
+
+    http://127.0.0.1:8000/demo
+
+建議操作：
+1. 問題輸入：什麼是專長？
+2. 執行層級：只做檢索（穩定回歸）
+3. Retrieval strategy：vector
+4. 按「搜尋證據」
+5. 展示章節、分數與來源文字
+
+面試說法：
+
+    The browser sends a request to the FastAPI server and renders the returned
+    evidence as source cards. The UI is a thin client over the same /search API
+    used by automated tests.
+
+
+五、Mac：執行 Selenium browser smoke test
+----------------------------------------
+
+這個測試會自行啟動一個短生命週期的 FastAPI test server，使用固定的
+deterministic retrieval backend，不依賴真正的 Ollama/Qdrant 結果。
+
+    cd ~/gitclone/book-spirit
+
+    RUN_SELENIUM=1 \
+    RAG_SKIP_INIT=1 \
+    uv run pytest -vv tests/e2e/test_book_spirit_smoke.py
+
+預期結果：
+
+    test_search_flow_shows_grounded_source PASSED
+    1 passed
+
+如果要執行所有 e2e marker：
+
+    RUN_SELENIUM=1 \
+    RAG_SKIP_INIT=1 \
+    uv run pytest -q tests/e2e -m e2e
+
+面試說法：
+
+    Selenium validates the critical browser journey and the UI/API contract.
+    It does not evaluate LLM answer quality. Retrieval quality is covered by
+    deterministic golden tests separately.
+
+
+六、Mac：執行快速 unit/API 測試
+------------------------------
+
+    uv run pytest -q tests/test_api.py tests/test_rag_native.py
+
+執行非 Selenium 測試：
+
+    uv run pytest -q -m "not e2e"
+
+完整測試（面試前確認，不建議現場第一次執行）：
+
+    uv run pytest -q
+
+
+七、Selenium 顯示瀏覽器（只用於事前練習）
+------------------------------------------
+
+目前 Selenium 使用 headless Chrome，所以不會看到視窗。
+如果需要觀察瀏覽器操作，暫時把：
+
+    options.add_argument("--headless=new")
+
+改成條件式：
+
+    if os.getenv("SHOW_BROWSER") != "1":
+        options.add_argument("--headless=new")
+
+然後在 Mac 的圖形桌面執行：
+
+    SHOW_BROWSER=1 \
+    RUN_SELENIUM=1 \
+    RAG_SKIP_INIT=1 \
+    uv run pytest -vv -s tests/e2e/test_book_spirit_smoke.py
+
+注意：
+- 透過一般 SSH terminal 執行時，通常只會看到 pytest 結果，不會看到 Mac Chrome 視窗。
+- 面試不需要依賴可見 Chrome；展示 PASSED 與程式碼即可。
+
+
+八、面試前快速驗證清單
+----------------------
+
+Mac：
+
+    cd ~/gitclone/book-spirit
+    uv run pytest -q -m "not e2e"
+    RUN_SELENIUM=1 RAG_SKIP_INIT=1 uv run pytest -q tests/e2e/test_book_spirit_smoke.py
+
+Windows：
+
+    ssh -L 8000:127.0.0.1:8000 <MAC_SSH_NAME>
+
+瀏覽器：
+
+    http://127.0.0.1:8000/demo
+    http://127.0.0.1:8000/docs
+    http://127.0.0.1:8000/health
+
+
+九、面試展示順序（約 5 分鐘）
+------------------------------
+
+1. 展示投影片中的測試分層。
+2. Windows 瀏覽器開 /demo，輸入「什麼是專長？」。
+3. 展示 source card：chapter、score、evidence text。
+4. Mac 執行：
+
+       RUN_SELENIUM=1 RAG_SKIP_INIT=1 uv run pytest -vv tests/e2e/test_book_spirit_smoke.py
+
+5. 打開 tests/e2e/test_book_spirit_smoke.py，說明 MagicMock 固定資料。
+6. 打開 tests/e2e/pages/book_spirit_page.py，說明 Page Object、data-testid 與 explicit wait。
+7. 最後說明 unit/API、golden、Selenium 各自負責的測試範圍。
+
+
+十、斷線或 Ollama 失敗時的備援
+------------------------------
+
+- 先展示已經開啟的網站截圖或預先保存的結果。
+- 展示 Selenium 先前成功的 terminal output：1 passed。
+- 展示測試程式碼與固定 JSON fixture。
+- 不要在面試現場臨時安裝模型、重建 index 或修改環境。
+
+最重要的說法：
+
+    The test is designed to make failures reproducible, explainable and
+    isolated. Browser automation checks the user journey, while lower-level
+    tests check business logic and retrieval behavior.

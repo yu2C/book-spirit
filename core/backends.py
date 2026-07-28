@@ -14,7 +14,7 @@ from core.pipeline import NativeRAG
 
 
 def build_rag_backend(name: str | None = None):
-    backend = name or os.getenv("RAG_BACKEND", BACKEND_LANGGRAPH)
+    backend = name or os.getenv("RAG_BACKEND", BACKEND_NATIVE)
     if backend not in SUPPORTED_BACKENDS:
         raise ValueError(f"Unsupported backend: {backend}. Use: {SUPPORTED_BACKENDS}")
     if backend == BACKEND_NATIVE:
